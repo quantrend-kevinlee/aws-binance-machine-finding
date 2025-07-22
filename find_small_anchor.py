@@ -2,6 +2,8 @@ import boto3
 import time, datetime, statistics
 import os
 import csv
+import subprocess
+import json
 
 # ======== 使用前需要配置的變數 ========
 REGION = "ap-northeast-1"
@@ -9,10 +11,14 @@ BEST_AZ = "ap-northeast-1a"             # 幣安所在 AZ
 SUBNET_ID = "subnet-07954f36129e8beb1"           # 該AZ下的子網ID
 SECURITY_GROUP_ID = "sg-080dea8b90091be0b"       # 安全組ID (與前階段相同)
 KEY_NAME = "dc-machine"             # SSH金鑰名稱
+KEY_PATH = os.path.expanduser("~/.ssh/dc-machine")  # SSH私鑰路徑
 EIP_ALLOC_ID = "eipalloc-05500f18fa63990b6"  # 彈性IP Allocation ID
 PLACEMENT_GROUP_NAME = "dc-machine-cpg" # Placement Group 名稱 (若不存在將自動創建)
-# 定義小型實例類型循環列表 (交替使用不同家族)
-INSTANCE_TYPES = ["c7i.large", "c8g.large"]
+# Latency thresholds
+MEDIAN_THRESHOLD_US = 122
+BEST_THRESHOLD_US = 102
+# 定義小型實例類型循環列表
+INSTANCE_TYPES = ["c8g.24xlarge", "c8g.metal-24xl"]
 # 報告輸出資料夾
 REPORT_DIR = "./reports"
 CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"
@@ -20,65 +26,15 @@ CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"
 # 自動建立資料夾（若已存在不會報錯）
 os.makedirs(REPORT_DIR, exist_ok=True)
 
+# Load latency test script from binance_latency_test.py
+script_path = os.path.join(os.path.dirname(__file__), "binance_latency_test.py")
+with open(script_path, "r") as f:
+    LATENCY_TEST_SCRIPT = f.read()
+
+# Simple user-data to install requirements
 USER_DATA_SCRIPT = """#!/bin/bash
-# 安裝測試所需的工具
-yum install -y -q bind-utils
-# 將 Python 延遲測試腳本寫入並執行
-cat > /tmp/latency_test.py << 'PYCODE'
-import socket, subprocess, statistics, time, sys
-ATTEMPTS = 10000
-TIMEOUT = 1
-MEDIAN_THRESHOLD_US = 122
-BEST_THRESHOLD_US = 102
-HOSTNAMES = ["fapi-mm.binance.com", "ws-fapi-mm.binance.com", "fstream-mm.binance.com"]
-def resolve_ips(hostname):
-    ips = []
-    result = subprocess.run(["host", hostname], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if "address" in parts:
-            ips.append(parts[-1])
-    return ips
-def test_latency(ip):
-    latencies = []
-    for _ in range(ATTEMPTS):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(TIMEOUT)
-            t0 = time.perf_counter_ns()
-            s.connect((ip, 443))
-            t1 = time.perf_counter_ns()
-            s.close()
-            latencies.append((t1 - t0) / 1000)  # ns轉微秒
-        except socket.error:
-            continue
-    if not latencies:
-        return float("inf"), float("inf"), False
-    median_us = statistics.median(latencies)
-    best_us = min(latencies)
-    passed = (median_us <= MEDIAN_THRESHOLD_US) or (best_us <= BEST_THRESHOLD_US)
-    return median_us, best_us, passed
-def main():
-    overall_passed = True
-    for hostname in HOSTNAMES:
-        ips = resolve_ips(hostname)
-        print(f"{hostname}:")
-        if not ips:
-            print(f"  [WARN] 無法解析 {hostname}")
-            overall_passed = False
-            continue
-        for ip in ips:
-            median_us, best_us, passed = test_latency(ip)
-            print(f"  IP {ip:<15}  median={median_us:9.2f} µs  best={best_us:9.2f} µs  passed={passed}")
-            # 這裡原始passed計算是逐IP &，我們稍後在外部解析，不在腳本內決定overall_passed
-    # main函數不判斷passed，退出碼固定0，實際passed與否由外部解析
-    return overall_passed
-if __name__ == "__main__":
-    ok = main()
-    sys.exit(0 if ok else 1)
-PYCODE
-python3 /tmp/latency_test.py | tee /dev/console
-"""  # END OF USER_DATA_SCRIPT
+yum install -y -q bind-utils python3
+"""
 
 # 初始化 AWS 客戶端
 ec2 = boto3.client('ec2', region_name=REGION)
@@ -111,8 +67,42 @@ anchor_instance_type = None
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, "w", newline="") as f:
         csv.writer(f).writerow(
-            ["timestamp", "instance_id", "instance_type", "median_us", "best_us", "passed"]
+            ["timestamp", "instance_id", "instance_type", 
+             "best_median_us", "best_median_ip", "best_median_host",
+             "best_best_us", "best_best_ip", "best_best_host", 
+             "passed"]
         )
+
+def run_ssh_command(ip, command, timeout=300):
+    """Run command via SSH and return output"""
+    ssh_cmd = [
+        "ssh",
+        "-i", KEY_PATH,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10",
+        f"ec2-user@{ip}",
+        command
+    ]
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout)
+        return result.stdout, result.stderr, result.returncode
+    except subprocess.TimeoutExpired:
+        return "", "Command timed out", -1
+    except Exception as e:
+        return "", str(e), -1
+
+def wait_for_ssh(ip, max_attempts=30):
+    """Wait for SSH to be available"""
+    print(f"Waiting for SSH access to {ip}...")
+    for i in range(max_attempts):
+        stdout, stderr, code = run_ssh_command(ip, "echo ready", timeout=10)
+        if code == 0 and "ready" in stdout:
+            print("SSH is ready!")
+            return True
+        print(f"  Attempt {i+1}/{max_attempts}...")
+        time.sleep(5)
+    return False
 
 while True:
     try:
@@ -154,7 +144,10 @@ while True:
             if not os.path.exists(CSV_FILE):
                 with open(CSV_FILE, "w", newline="") as f:
                     csv.writer(f).writerow(
-                        ["timestamp","instance_id","instance_type","median_us","best_us","passed"]
+                        ["timestamp", "instance_id", "instance_type", 
+                         "best_median_us", "best_median_ip", "best_median_host",
+                         "best_best_us", "best_best_ip", "best_best_host", 
+                         "passed"]
                     )
             # 重置統計
             start_date = today
@@ -168,6 +161,10 @@ while True:
         daily_types[instance_type] += 1
 
         print(f"\nLaunching test instance of type {instance_type} ...")
+        # Add Unix timestamp prefix to instance name
+        unix_timestamp = int(time.time())
+        instance_name = f"{unix_timestamp}-DC-Search"
+        
         try:
             resp = ec2.run_instances(
                 ImageId=("resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64" 
@@ -182,7 +179,7 @@ while True:
                 UserData=USER_DATA_SCRIPT,
                 TagSpecifications=[{
                     "ResourceType": "instance",
-                    "Tags": [{"Key": "Name", "Value": f"SmallSearch-{instance_type}"}]
+                    "Tags": [{"Key": "Name", "Value": instance_name}]
                 }]
             )
         except Exception as e:
@@ -202,19 +199,16 @@ while True:
         instance_id = resp['Instances'][0]['InstanceId']
         print(f"Instance {instance_id} launched.")
 
-        # 附加 EIP 到該實例
-        associated = False
-        
-        # 等待實例狀態為 running 之後再綁
+        # 等待實例狀態為 running
         try:
             ec2.get_waiter('instance_running').wait(
                 InstanceIds=[instance_id],
-                WaiterConfig={"Delay": 5, "MaxAttempts": 30})  # 最多約 150 秒
+                WaiterConfig={"Delay": 5, "MaxAttempts": 30})
         except Exception as e:
             print(f"[WARN] Wait for running failed: {e}")
         
-
-        # 這時 ENI 已就緒，才去綁 EIP
+        # 附加 EIP 到該實例
+        associated = False
         for attempt in range(3):
             try:
                 ec2.associate_address(InstanceId=instance_id,
@@ -233,145 +227,184 @@ while True:
             time.sleep(5)
             continue
 
-        # 等待 user-data 測試完成
-        for _ in range(20):                  # 最多約 60 s
-            time.sleep(3)
-            statuses = ec2.describe_instance_status(
-                InstanceIds=[instance_id],
-                IncludeAllInstances=True
-            )["InstanceStatuses"]
-            if statuses and statuses[0]["SystemStatus"]["Status"] == "ok":
-                break
+        # Get the EIP address for SSH
+        eip_info = ec2.describe_addresses(AllocationIds=[EIP_ALLOC_ID])
+        eip_address = eip_info['Addresses'][0]['PublicIp']
+        print(f"EIP address: {eip_address}")
 
-        # 取得 console output
+        # Wait for SSH to be ready
+        if not wait_for_ssh(eip_address):
+            print("[ERROR] SSH not available after timeout. Terminating instance...")
+            try:
+                ec2.terminate_instances(InstanceIds=[instance_id])
+            except:
+                pass
+            time.sleep(5)
+            continue
+
+        # Create and run the latency test script
+        print("Running latency test via SSH...")
+        
+        # First, create the test script on the instance
+        script_content = LATENCY_TEST_SCRIPT.replace("'", "'\"'\"'")  # Escape single quotes
+        create_script_cmd = f"echo '{script_content}' > /tmp/latency_test.py"
+        stdout, stderr, code = run_ssh_command(eip_address, create_script_cmd)
+        if code != 0:
+            print(f"[ERROR] Failed to create test script: {stderr}")
+            try:
+                ec2.terminate_instances(InstanceIds=[instance_id])
+            except:
+                pass
+            time.sleep(5)
+            continue
+
+        # Run the test script
+        print("Executing latency tests (this may take a few minutes)...")
+        stdout, stderr, code = run_ssh_command(eip_address, "python3 /tmp/latency_test.py", timeout=300)
+        
+        if code != 0:
+            print(f"[ERROR] Test script failed: {stderr}")
+            try:
+                ec2.terminate_instances(InstanceIds=[instance_id])
+            except:
+                pass
+            time.sleep(5)
+            continue
+
+        # Parse JSON results
         try:
-            output = ec2.get_console_output(InstanceId=instance_id, Latest=True)
-            console_text = output.get('Output', '') or ''
-        except Exception as e:
-            console_text = ""
-            print(f"[ERROR] Could not retrieve console output: {e}")
+            results = json.loads(stdout)
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Failed to parse test results: {e}")
+            print(f"Raw output: {stdout}")
+            try:
+                ec2.terminate_instances(InstanceIds=[instance_id])
+            except:
+                pass
+            time.sleep(5)
+            continue
 
-        # 解析 console_text 獲取延遲結果
-        lines = console_text.splitlines()
-        host_results = {}  # {hostname: {'passed': bool, 'median': float(min), 'best': float(min)} }
-        global_best_latency = float("inf")  # 這台實例所有IP中最低延遲
-        for line in lines:
-            line = line.strip()
-            if line.endswith(":") and not line.startswith("IP"):
-                # hostname line
-                current_host = line.rstrip(":")
-                host_results[current_host] = {"passed": False, "median": float("inf"), "best": float("inf")}
-            elif line.startswith("IP ") and "median=" in line:
-                median_val = best_val = None
-                passed_val = False
-                parts = line.split()
-                # 找出 median 值和 best 值
-                for part in parts:
-                    if part.startswith("median="):
-                        median_val = float(part.split("=")[1])
-                    if part.startswith("best="):
-                        best_val = float(part.split("=")[1])
-                    if part.startswith("passed="):
-                        passed_val = part.split("=")[1]
-                        passed_val = True if passed_val == "True" else False
-                # 更新當前host的最佳數據
-                if median_val is not None and median_val < host_results[current_host]["median"]:
-                    host_results[current_host]["median"] = median_val
-                if best_val is not None and best_val < host_results[current_host]["best"]:
-                    host_results[current_host]["best"] = best_val
-                # 如此IP通過閾值，標記該host為passed
-                if passed_val:
-                    host_results[current_host]["passed"] = True
-                # 更新全域最低latency
-                if best_val < global_best_latency:
-                    global_best_latency = best_val
-
-        # 計算該實例對所有host的「最差中位數」作為代表值
-        instance_median = 0.0
-        instance_passed = True
-        for host, res in host_results.items():
-            if res["median"] == float("inf"):
-                # 沒有測得數值，當作失敗
-                instance_passed = False
-            else:
-                if res["median"] > instance_median:
-                    instance_median = res["median"]
-            if not res["passed"]:
-                instance_passed = False
-
-        # instance_median / global_best_latency / instance_passed 皆已算好
-        utc_now = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-        print(f"[{utc_now}] {instance_id}  {instance_type:<9}  "
-            f"median={instance_median:.2f} µs  best={global_best_latency:.2f} µs  "
-            f"passed={instance_passed}")
-
-        # 追寫到 CSV
-        with open(CSV_FILE, "a", newline="") as f:
-            csv.writer(f).writerow(
-                [utc_now, instance_id, instance_type,
-                f"{instance_median:.2f}", f"{global_best_latency:.2f}", instance_passed]
-            )
+        # Process results - Track best values across all IPs
+        best_median_value = float("inf")
+        best_median_ip = ""
+        best_median_host = ""
+        
+        best_best_value = float("inf") 
+        best_best_ip = ""
+        best_best_host = ""
+        
+        instance_passed = False
+        
+        print("\nLatency test results:")
+        for hostname, host_data in results.items():
+            if "error" in host_data:
+                print(f"  {hostname}: {host_data['error']}")
+                continue
             
-        # 保存日統計
-        if instance_median > 0:
-            daily_medians.append(instance_median)
-        if global_best_latency < float("inf"):
-            daily_best_latencies.append(global_best_latency)
+            print(f"  {hostname}:")
+            
+            for ip, ip_data in host_data["ips"].items():
+                median = ip_data["median"]
+                best = ip_data["best"]
+                
+                # Check if this IP meets our criteria
+                ip_passed = (median <= MEDIAN_THRESHOLD_US) or (best <= BEST_THRESHOLD_US)
+                
+                print(f"    IP {ip:<15}  median={median:9.2f} µs  best={best:9.2f} µs  passed={ip_passed}")
+                
+                # Track best median across all IPs
+                if median < best_median_value:
+                    best_median_value = median
+                    best_median_ip = ip
+                    best_median_host = hostname
+                
+                # Track best "best" value across all IPs
+                if best < best_best_value:
+                    best_best_value = best
+                    best_best_ip = ip
+                    best_best_host = hostname
+                
+                # Instance passes if ANY IP meets criteria
+                if ip_passed:
+                    instance_passed = True
+
+        # Log results
+        utc_now = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+        print(f"\n[{utc_now}] {instance_id}  {instance_type:<9}")
+        print(f"  Best median: {best_median_value:.2f} µs ({best_median_ip} @ {best_median_host})")
+        print(f"  Best latency: {best_best_value:.2f} µs ({best_best_ip} @ {best_best_host})")
+        print(f"  Passed: {instance_passed}")
+
+        # Write to CSV
+        with open(CSV_FILE, "a", newline="") as f:
+            csv.writer(f).writerow([
+                utc_now, instance_id, instance_type,
+                f"{best_median_value:.2f}", best_median_ip, best_median_host,
+                f"{best_best_value:.2f}", best_best_ip, best_best_host,
+                instance_passed
+            ])
+            
+        # Save daily statistics
+        if best_median_value < float("inf"):
+            daily_medians.append(best_median_value)
+        if best_best_value < float("inf"):
+            daily_best_latencies.append(best_best_value)
         daily_counts += 1
 
         if instance_passed:
-            # 找到錨點
+            # Found anchor
             anchor_instance_id = instance_id
             anchor_instance_type = instance_type
             print(f"*** Found anchor instance {instance_id} (type {instance_type}) meeting latency criteria! ***")
-            print("Latency details:", host_results, f"Global best handshake = {global_best_latency:.2f} µs")
-            # 寫入成功報告立即輸出
+            print(f"Best median: {best_median_value:.2f} µs from {best_median_ip} ({best_median_host})")
+            print(f"Best single handshake: {best_best_value:.2f} µs from {best_best_ip} ({best_best_host})")
+            # Write success report
             success_report = (f"\n成功找到錨點小型實例！\n"
                             f"- Instance ID: {anchor_instance_id}\n"
                             f"- Instance Type: {anchor_instance_type}\n"
                             f"- Placement Group: {PLACEMENT_GROUP_NAME} (AZ {BEST_AZ})\n"
-                            f"- Median latencies: " +
-                            ", ".join([f"{h}={res['median']:.2f}µs" for h, res in host_results.items()]) + "\n" +
-                            f"- Best single handshake overall: {global_best_latency:.2f} µs\n")
+                            f"- Best median: {best_median_value:.2f} µs from {best_median_ip} ({best_median_host})\n"
+                            f"- Best single handshake: {best_best_value:.2f} µs from {best_best_ip} ({best_best_host})\n")
             print(success_report)
-            # 將當天截至目前統計寫入報告
+            
+            # Append to today's report
             report_date = start_date
             report_filename = f"{REPORT_DIR}/report-{report_date}.md"
-            with open(report_filename, "a") as rpt:  # append to today's report
+            with open(report_filename, "a") as rpt:
                 rpt.write("\n**Anchor instance found, stopping small instance search.**\n")
                 rpt.write(success_report)
             break
         else:
-            # 未達標，終止實例繼續搜尋下一台
+            # Did not meet target, terminate and continue
             print(f"Instance {instance_id} did not meet latency target. Terminating and continuing...")
             try:
                 ec2.terminate_instances(InstanceIds=[instance_id])
             except Exception as e:
                 print(f"[ERROR] Terminating {instance_id} failed: {e}")
-            # 等待片刻以確保實例終止並 EIP 可用
+            # Wait to ensure instance termination and EIP availability
             time.sleep(5)
             try:
                 ec2.disassociate_address(AllocationId=EIP_ALLOC_ID)
             except:
                 pass
+                
     except KeyboardInterrupt:
         print("\n[CTRL‑C] Graceful shutdown requested…")
-        # 若目前仍有一台 instance 在跑（且還沒被標記為 anchor）
+        # If current instance is running and not anchor
         if 'instance_id' in locals() and instance_id and instance_id != anchor_instance_id:
             print(f"→ Terminating pending instance {instance_id} …")
             try:
                 ec2.terminate_instances(InstanceIds=[instance_id])
             except Exception as e:
                 print(f"  Terminate failed: {e}")
-            # 確保 EIP 釋放
+            # Ensure EIP is released
             try:
                 ec2.disassociate_address(AllocationId=EIP_ALLOC_ID)
             except:
                 pass
-        # 若已經找到錨點，也可以選擇保留；這裡不動 anchor
-        break   # 跳出 while True
+        break   # Exit while True
 
-# 迴圈結束 (錨點已找到或被手動中止)
+# Loop ended (anchor found or manually stopped)
 if anchor_instance_id:
     print(f"Anchor instance is {anchor_instance_id} ({anchor_instance_type}). Keep it running for stage 3.")
 else:
