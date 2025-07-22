@@ -146,13 +146,9 @@ def log_champion_event(instance_id, instance_type, latency, ip, placement_group,
     with open(CHAMPION_LOG_FILE, "a") as f:
         f.write(f"\n{timestamp}\n")
         f.write(f"  New Champion: {instance_id} ({instance_type})\n")
-        f.write(f"  Best Latency: {latency:.2f}µs\n")
-        f.write(f"  Optimal IP: {ip}\n")
+        f.write(f"  fstream-mm Best Latency: {latency:.2f}µs\n")
+        f.write(f"  fstream-mm Optimal IP: {ip}\n")
         f.write(f"  Placement Group: {placement_group}\n")
-        
-        if old_champion:
-            f.write(f"  Replaced: {old_champion['instance_id']} ({old_champion['latency']:.2f}µs)\n")
-        
         f.write("-" * 80 + "\n")
 
 def async_cleanup_placement_group(instance_id, placement_group_name):
