@@ -4,6 +4,7 @@ import os
 import csv
 import subprocess
 import json
+import threading
 
 # ======== 使用前需要配置的變數 ========
 REGION = "ap-northeast-1"
@@ -13,12 +14,12 @@ SECURITY_GROUP_ID = "sg-080dea8b90091be0b"       # 安全組ID (與前階段相�
 KEY_NAME = "dc-machine"             # SSH金鑰名稱
 KEY_PATH = os.path.expanduser("~/.ssh/dc-machine")  # SSH私鑰路徑
 EIP_ALLOC_ID = "eipalloc-05500f18fa63990b6"  # 彈性IP Allocation ID
-PLACEMENT_GROUP_NAME = "dc-machine-cpg" # Placement Group 名稱 (若不存在將自動創建)
+PLACEMENT_GROUP_BASE = "dc-machine-cpg" # Placement Group 基礎名稱
 # Latency thresholds
 MEDIAN_THRESHOLD_US = 122
 BEST_THRESHOLD_US = 102
 # 定義小型實例類型循環列表
-INSTANCE_TYPES = ["c8g.24xlarge", "c8g.metal-24xl"]
+INSTANCE_TYPES = ["c8g.2xlarge"] # , "c8g.metal-24xl", "c7i.24xlarge", "c7i.metal-24xl"
 # 報告輸出資料夾
 REPORT_DIR = "./reports"
 CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"
@@ -39,16 +40,50 @@ yum install -y -q bind-utils python3
 # 初始化 AWS 客戶端
 ec2 = boto3.client('ec2', region_name=REGION)
 
-# 確保Placement Group存在 (不存在則建立)
-try:
-    ec2.describe_placement_groups(GroupNames=[PLACEMENT_GROUP_NAME])
-except:
-    print(f"Creating placement group {PLACEMENT_GROUP_NAME} in {BEST_AZ}...")
-    try:
-        ec2.create_placement_group(GroupName=PLACEMENT_GROUP_NAME, Strategy='cluster')
-    except Exception as e:
-        print(f"[ERROR] 無法建立 Placement Group: {e}")
-        exit(1)
+# Track background cleanup threads
+cleanup_threads = []
+
+def async_cleanup_placement_group(instance_id, placement_group_name):
+    """Background task to delete placement group after instance terminates"""
+    def cleanup():
+        print(f"[Background] Scheduled cleanup for PG {placement_group_name} (checking every minute for up to 30 minutes)")
+        
+        # Create a new EC2 client for this thread
+        thread_ec2 = boto3.client('ec2', region_name=REGION)
+        
+        try:
+            # Wait for instance to fully terminate
+            # Check once per minute for up to 30 minutes
+            waiter = thread_ec2.get_waiter('instance_terminated')
+            waiter.wait(
+                InstanceIds=[instance_id],
+                WaiterConfig={
+                    'Delay': 60,      # Check every 60 seconds
+                    'MaxAttempts': 30  # Up to 30 attempts = 30 minutes
+                }
+            )
+            
+            # Small delay to ensure AWS has fully updated its state
+            time.sleep(10)
+            
+            # Now delete the placement group
+            thread_ec2.delete_placement_group(GroupName=placement_group_name)
+            print(f"[Background] ✓ Successfully deleted placement group {placement_group_name}")
+            
+        except Exception as e:
+            if 'Max attempts exceeded' in str(e):
+                print(f"[Background] ⚠️ Timeout: Instance {instance_id} still terminating after 30 minutes")
+            else:
+                print(f"[Background] ⚠️ Failed to delete placement group {placement_group_name}: {e}")
+        
+        # Thread will automatically terminate here when function returns
+    
+    # Start cleanup in a background thread
+    # Not a daemon thread so we can wait for it on Ctrl+C
+    thread = threading.Thread(target=cleanup, daemon=False)
+    thread.start()
+    cleanup_threads.append(thread)
+    return thread
 
 # 統計數據初始化
 start_date = datetime.date.today()
@@ -115,7 +150,7 @@ while True:
             try:
                 with open(report_filename, "w") as rpt:
                     rpt.write(f"# Search Report {report_date}\n\n")
-                    rpt.write(f"## Small Instance Search (Placement Group '{PLACEMENT_GROUP_NAME}')\n")
+                    rpt.write(f"## Small Instance Search (Placement Group base: '{PLACEMENT_GROUP_BASE}')\n")
                     rpt.write(f"- **Instances tested**: {daily_counts}\n")
                     for t, count in daily_types.items():
                         rpt.write(f"  - {t}: {count} instances\n")
@@ -160,9 +195,22 @@ while True:
         instance_index = (instance_index + 1) % len(INSTANCE_TYPES)
         daily_types[instance_type] += 1
 
-        print(f"\nLaunching test instance of type {instance_type} ...")
-        # Add Unix timestamp prefix to instance name
+        # Create placement group with timestamp
         unix_timestamp = int(time.time())
+        placement_group_name = f"{PLACEMENT_GROUP_BASE}-{unix_timestamp}"
+        
+        print(f"\nCreating placement group {placement_group_name}...")
+        try:
+            ec2.create_placement_group(GroupName=placement_group_name, Strategy='cluster')
+            print(f"  ✓ Created placement group")
+            time.sleep(2)  # Give AWS a moment to register the PG
+        except Exception as e:
+            print(f"[ERROR] Failed to create placement group: {e}")
+            time.sleep(5)
+            continue
+
+        print(f"Launching test instance of type {instance_type} ...")
+        # Add Unix timestamp prefix to instance name
         instance_name = f"{unix_timestamp}-DC-Search"
         
         try:
@@ -175,7 +223,7 @@ while True:
                 KeyName=KEY_NAME,
                 SecurityGroupIds=[SECURITY_GROUP_ID],
                 SubnetId=SUBNET_ID,
-                Placement={"GroupName": PLACEMENT_GROUP_NAME, "AvailabilityZone": BEST_AZ},
+                Placement={"GroupName": placement_group_name, "AvailabilityZone": BEST_AZ},
                 UserData=USER_DATA_SCRIPT,
                 TagSpecifications=[{
                     "ResourceType": "instance",
@@ -185,11 +233,20 @@ while True:
         except Exception as e:
             err = str(e)
             print(f"[ERROR] run_instances failed for {instance_type}: {err}")
+            
+            # Clean up the placement group immediately since no instance was created
+            print(f"Deleting unused placement group {placement_group_name}...")
+            try:
+                ec2.delete_placement_group(GroupName=placement_group_name)
+                print(f"  ✓ Deleted placement group")
+            except Exception as del_err:
+                print(f"  ⚠️  Could not delete placement group: {del_err}")
+            
             # 若是容量或佈局錯誤，換下一個實例類型重試
-            if ("Insufficient capacity" in err) or ("Placement" in err):
-                print(" -> Insufficient capacity or placement issue, will try next instance type.")
+            if ("Insufficient capacity" in err) or ("Placement" in err) or ("VcpuLimitExceeded" in err):
+                print(" -> Capacity/limit issue, will try next instance type.")
                 instance_index = (instance_index + 1) % len(INSTANCE_TYPES)
-                time.sleep(5)
+                time.sleep(2)
                 continue
             else:
                 # 其他錯誤，等待幾秒再重試
@@ -224,7 +281,9 @@ while True:
                 ec2.terminate_instances(InstanceIds=[instance_id])
             except:
                 pass
-            time.sleep(5)
+            # Schedule placement group cleanup
+            async_cleanup_placement_group(instance_id, placement_group_name)
+            time.sleep(2)
             continue
 
         # Get the EIP address for SSH
@@ -239,7 +298,9 @@ while True:
                 ec2.terminate_instances(InstanceIds=[instance_id])
             except:
                 pass
-            time.sleep(5)
+            # Schedule placement group cleanup
+            async_cleanup_placement_group(instance_id, placement_group_name)
+            time.sleep(2)
             continue
 
         # Create and run the latency test script
@@ -255,7 +316,9 @@ while True:
                 ec2.terminate_instances(InstanceIds=[instance_id])
             except:
                 pass
-            time.sleep(5)
+            # Schedule placement group cleanup
+            async_cleanup_placement_group(instance_id, placement_group_name)
+            time.sleep(2)
             continue
 
         # Run the test script
@@ -268,7 +331,9 @@ while True:
                 ec2.terminate_instances(InstanceIds=[instance_id])
             except:
                 pass
-            time.sleep(5)
+            # Schedule placement group cleanup
+            async_cleanup_placement_group(instance_id, placement_group_name)
+            time.sleep(2)
             continue
 
         # Parse JSON results
@@ -281,7 +346,9 @@ while True:
                 ec2.terminate_instances(InstanceIds=[instance_id])
             except:
                 pass
-            time.sleep(5)
+            # Schedule placement group cleanup
+            async_cleanup_placement_group(instance_id, placement_group_name)
+            time.sleep(2)
             continue
 
         # Process results - Track best values across all IPs
@@ -343,6 +410,33 @@ while True:
                 f"{best_best_value:.2f}", best_best_ip, best_best_host,
                 instance_passed
             ])
+        
+        # Write detailed results to text file
+        txt_file = CSV_FILE.replace(".csv", ".txt")
+        with open(txt_file, "a") as f:
+            # Write summary line
+            f.write(f"[{utc_now}] {instance_id}  {instance_type}\n")
+            f.write(f"  Best median: {best_median_value:.2f} µs ({best_median_ip} @ {best_median_host})\n")
+            f.write(f"  Best latency: {best_best_value:.2f} µs ({best_best_ip} @ {best_best_host})\n")
+            f.write(f"  Passed: {instance_passed}\n")
+            
+            # Write detailed test results
+            f.write("\nLatency test results:\n")
+            for hostname, host_data in results.items():
+                if "error" in host_data:
+                    f.write(f"  {hostname}: {host_data['error']}\n")
+                    continue
+                
+                f.write(f"  {hostname}:\n")
+                
+                for ip, ip_data in host_data["ips"].items():
+                    median = ip_data["median"]
+                    best = ip_data["best"]
+                    ip_passed = (median <= MEDIAN_THRESHOLD_US) or (best <= BEST_THRESHOLD_US)
+                    f.write(f"    IP {ip:<15}  median={median:9.2f} µs  best={best:9.2f} µs  passed={ip_passed}\n")
+            
+            # Add separator between instances
+            f.write("\n" + "="*80 + "\n\n")
             
         # Save daily statistics
         if best_median_value < float("inf"):
@@ -362,7 +456,7 @@ while True:
             success_report = (f"\n成功找到錨點小型實例！\n"
                             f"- Instance ID: {anchor_instance_id}\n"
                             f"- Instance Type: {anchor_instance_type}\n"
-                            f"- Placement Group: {PLACEMENT_GROUP_NAME} (AZ {BEST_AZ})\n"
+                            f"- Placement Group: {placement_group_name} (AZ {BEST_AZ})\n"
                             f"- Best median: {best_median_value:.2f} µs from {best_median_ip} ({best_median_host})\n"
                             f"- Best single handshake: {best_best_value:.2f} µs from {best_best_ip} ({best_best_host})\n")
             print(success_report)
@@ -379,14 +473,24 @@ while True:
             print(f"Instance {instance_id} did not meet latency target. Terminating and continuing...")
             try:
                 ec2.terminate_instances(InstanceIds=[instance_id])
+                print(f"  ✓ Instance termination initiated")
             except Exception as e:
                 print(f"[ERROR] Terminating {instance_id} failed: {e}")
-            # Wait to ensure instance termination and EIP availability
-            time.sleep(5)
+                time.sleep(5)
+                continue
+                
+            # Disassociate EIP immediately (this is fast)
             try:
                 ec2.disassociate_address(AllocationId=EIP_ALLOC_ID)
             except:
                 pass
+            
+            # Schedule placement group deletion in background
+            print(f"Scheduling placement group {placement_group_name} for deletion...")
+            async_cleanup_placement_group(instance_id, placement_group_name)
+            
+            # Brief pause before next iteration (but don't wait for termination)
+            time.sleep(2)
                 
     except KeyboardInterrupt:
         print("\n[CTRL‑C] Graceful shutdown requested…")
@@ -402,6 +506,38 @@ while True:
                 ec2.disassociate_address(AllocationId=EIP_ALLOC_ID)
             except:
                 pass
+            # Schedule placement group cleanup if exists
+            if 'placement_group_name' in locals() and placement_group_name:
+                print(f"→ Scheduling cleanup of placement group {placement_group_name} …")
+                async_cleanup_placement_group(instance_id, placement_group_name)
+        
+        # Wait for all cleanup threads to complete
+        active_threads = [t for t in cleanup_threads if t.is_alive()]
+        if active_threads:
+            print(f"\n⏳ Waiting for {len(active_threads)} background cleanup task(s) to complete...")
+            print("   This ensures all instances are terminated and placement groups are deleted.")
+            print("   (Checking every minute, up to 30 minutes per task)")
+            
+            start_wait = time.time()
+            last_count = len(active_threads)
+            
+            while active_threads:
+                # Show progress every 30 seconds
+                time.sleep(30)
+                active_threads = [t for t in cleanup_threads if t.is_alive()]
+                
+                if len(active_threads) < last_count:
+                    print(f"   ✓ {last_count - len(active_threads)} task(s) completed")
+                    last_count = len(active_threads)
+                
+                if active_threads:
+                    elapsed = int(time.time() - start_wait)
+                    mins = elapsed // 60
+                    secs = elapsed % 60
+                    print(f"   ⏳ {len(active_threads)} task(s) still running... (elapsed: {mins}m {secs}s)")
+            
+            print("   ✓ All cleanup tasks completed!")
+        
         break   # Exit while True
 
 # Loop ended (anchor found or manually stopped)
@@ -409,3 +545,12 @@ if anchor_instance_id:
     print(f"Anchor instance is {anchor_instance_id} ({anchor_instance_type}). Keep it running for stage 3.")
 else:
     print("Search stopped without finding an anchor instance.")
+
+# Give background threads a moment to start cleanup before exiting
+if cleanup_threads:
+    active_threads = sum(1 for t in cleanup_threads if t.is_alive())
+    if active_threads > 0:
+        print(f"\n{active_threads} background cleanup task(s) still running...")
+        print("These will check instance status every minute for up to 30 minutes.")
+        print("Placement groups will be deleted automatically when instances terminate.")
+    time.sleep(2)

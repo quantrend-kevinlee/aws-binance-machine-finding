@@ -80,14 +80,57 @@ def delete_key_pair(ec2_client, key_name):
     except Exception as e:
         print(f"   ✗ Error deleting key pair: {e}")
 
-def delete_placement_group(ec2_client, pg_name):
-    """Delete placement group"""
-    print("\n4. Deleting placement group...")
+def delete_placement_groups(ec2_client):
+    """Delete all dc-machine placement groups"""
+    print("\n4. Deleting placement groups...")
     try:
-        ec2_client.delete_placement_group(GroupName=pg_name)
-        print(f"   ✓ Placement group '{pg_name}' deleted")
+        # List all placement groups
+        pgs = ec2_client.describe_placement_groups()
+        dc_pgs = [pg['GroupName'] for pg in pgs['PlacementGroups'] 
+                  if pg['GroupName'].startswith('dc-machine-cpg')]
+        
+        if dc_pgs:
+            print(f"   Found {len(dc_pgs)} placement group(s) to delete")
+            deleted = 0
+            in_use = 0
+            
+            for pg_name in dc_pgs:
+                try:
+                    # First check if any instances are using this PG
+                    instances = ec2_client.describe_instances(
+                        Filters=[
+                            {'Name': 'placement-group-name', 'Values': [pg_name]},
+                            {'Name': 'instance-state-name', 
+                             'Values': ['pending', 'running', 'stopping', 'stopped', 'shutting-down']}
+                        ]
+                    )
+                    
+                    instance_count = sum(len(r['Instances']) for r in instances['Reservations'])
+                    
+                    if instance_count > 0:
+                        print(f"   ⚠️  Placement group '{pg_name}' has {instance_count} instances - skipping")
+                        in_use += 1
+                    else:
+                        # No instances, safe to delete
+                        ec2_client.delete_placement_group(GroupName=pg_name)
+                        print(f"   ✓ Deleted placement group '{pg_name}'")
+                        deleted += 1
+                        
+                except Exception as e:
+                    if 'is in use' in str(e):
+                        print(f"   ⚠️  Placement group '{pg_name}' is in use - may have terminating instances")
+                        in_use += 1
+                    else:
+                        print(f"   ✗ Error deleting placement group '{pg_name}': {e}")
+            
+            if in_use > 0:
+                print(f"\n   Note: {in_use} placement group(s) still have instances.")
+                print("   Wait for all instances to fully terminate, then run cleanup again.")
+                
+        else:
+            print("   No placement groups found")
     except Exception as e:
-        print(f"   ✗ Error deleting placement group: {e}")
+        print(f"   ✗ Error listing placement groups: {e}")
 
 def delete_security_group(ec2_client, sg_id):
     """Delete security group"""
@@ -173,9 +216,8 @@ def main():
     if 'key_name' in config:
         delete_key_pair(ec2_client, config['key_name'])
     
-    # 4. Delete placement group
-    if 'placement_group_name' in config:
-        delete_placement_group(ec2_client, config['placement_group_name'])
+    # 4. Delete placement groups (both old style and new timestamped ones)
+    delete_placement_groups(ec2_client)
     
     # 5. Delete security group
     if 'security_group_id' in config:

@@ -33,6 +33,8 @@ ANY IP address from the Binance domains must meet ONE of these criteria:
     - Alternates between instance types (currently c8g.24xlarge/c8g.metal-24xl)
     - Single Elastic IP reused across all test instances
     - Automatic termination of non-qualifying instances
+    - **Dynamic Placement Groups**: Each instance gets a unique placement group (`dc-machine-cpg-{timestamp}`)
+    - **Asynchronous Cleanup**: Failed instances and their placement groups are cleaned up in background threads
 
 3. **Latency Testing**
 
@@ -53,6 +55,7 @@ ANY IP address from the Binance domains must meet ONE of these criteria:
     - Enhanced CSV format includes:
         - Best median value + source IP/host
         - Best latency value + source IP/host
+    - Detailed text logs (`latency_log_YYYY-MM-DD.txt`) with full test results
     - Daily Markdown reports with statistics
     - Automatic daily rollover at midnight
 
@@ -65,7 +68,7 @@ ANY IP address from the Binance domains must meet ONE of these criteria:
 -   **Security Group**: Allows SSH (port 22) and outbound HTTPS (port 443)
 -   **Key Pair**: SSH key at `~/.ssh/dc-machine.pem`
 -   **Elastic IP**: Single EIP reused across test instances
--   **Placement Group**: Cluster type for co-location
+-   **Placement Groups**: Dynamic cluster placement groups created per instance
 -   **IAM Permissions**: EC2 full access
 
 ## Script Configuration
@@ -80,7 +83,7 @@ SECURITY_GROUP_ID = "sg-080dea8b90091be0b"
 KEY_NAME = "dc-machine"
 KEY_PATH = os.path.expanduser("~/.ssh/dc-machine")  # Note: no .pem extension in script
 EIP_ALLOC_ID = "eipalloc-05500f18fa63990b6"
-PLACEMENT_GROUP_NAME = "dc-machine-cpg"
+PLACEMENT_GROUP_BASE = "dc-machine-cpg"  # Base name for dynamic placement groups
 MEDIAN_THRESHOLD_US = 122
 BEST_THRESHOLD_US = 102
 INSTANCE_TYPES = ["c8g.24xlarge", "c8g.metal-24xl"]  # Or ["c7i.large", "c8g.large"] for initial search
@@ -88,16 +91,20 @@ INSTANCE_TYPES = ["c8g.24xlarge", "c8g.metal-24xl"]  # Or ["c7i.large", "c8g.lar
 
 ## Testing Flow
 
-1. Launch instance with Unix timestamp prefix in name (format: `{timestamp}-DC-Search`)
-2. Wait for instance to reach "running" state
-3. Associate Elastic IP to instance
-4. Wait for SSH availability
-5. Read test script from `binance_latency_test.py` and copy to instance via SSH
-6. Execute test script and capture JSON output
-7. Parse JSON results from test script
-8. Evaluate against thresholds (ANY IP meeting criteria = pass)
-9. If passed: Keep as anchor instance
-10. If failed: Terminate and try next instance
+1. Create unique placement group with timestamp (`dc-machine-cpg-{timestamp}`)
+2. Launch instance with Unix timestamp prefix in name (format: `{timestamp}-DC-Search`)
+3. Wait for instance to reach "running" state
+4. Associate Elastic IP to instance
+5. Wait for SSH availability
+6. Read test script from `binance_latency_test.py` and copy to instance via SSH
+7. Execute test script and capture JSON output
+8. Parse JSON results from test script
+9. Evaluate against thresholds (ANY IP meeting criteria = pass)
+10. If passed: Keep instance and placement group as anchor
+11. If failed: 
+    - Terminate instance (non-blocking)
+    - Schedule placement group deletion in background thread
+    - Continue to next test immediately
 
 ## Output Format
 
@@ -127,13 +134,15 @@ timestamp,instance_id,instance_type,best_median_us,best_median_ip,best_median_ho
 4. ✅ **Basic CSV → Enhanced CSV**: Added source IP/host information for best values
 5. ✅ **Static names → Timestamped names**: Added Unix timestamp prefix to instance names
 6. ✅ **Embedded script → External file**: Test script now loaded from `binance_latency_test.py` file
+7. ✅ **Static placement group → Dynamic placement groups**: Each test uses unique PG for rack diversity
+8. ✅ **Synchronous cleanup → Asynchronous cleanup**: Background threads handle termination/deletion
 
 ### Key Files
 
 -   `find_small_anchor.py`: Main script that launches instances and runs tests via SSH
 -   `binance_latency_test.py`: Latency test script executed on each instance (formerly our.py)
 -   `setup_aws_resources.py`: Creates all required AWS resources with DNS properly configured
--   `cleanup_aws_resources.py`: Removes all created resources
+-   `cleanup_aws_resources.py`: Removes all created resources (handles multiple placement groups)
 -   `check_vpc_dns.py`: Verifies and fixes VPC DNS settings
 -   `dc.py`: Reference latency test script provided by client DC (contains bugs, see script comments)
 
@@ -153,6 +162,9 @@ python3 check_vpc_dns.py
 
 ```bash
 python3 find_small_anchor.py
+
+# Graceful shutdown with Ctrl+C will wait for all cleanup tasks
+# Background cleanup threads continue even if script exits normally
 ```
 
 ### Cleanup
@@ -186,10 +198,37 @@ Reference latency testing script provided by client DC:
     -   `ip.address` should be `ip` in error handling
 -   Not used in production; `binance_latency_test.py` is the improved version
 
+## Placement Group Strategy
+
+### Why Dynamic Placement Groups?
+
+AWS cluster placement groups place instances on the same physical rack for lowest latency. However:
+- AWS doesn't guarantee which rack a placement group uses
+- Empty placement groups don't have "affinity" to previous rack locations
+- Different racks can have significantly different latency to external endpoints (30-67% variation reported by HFT traders)
+
+### Implementation
+
+1. **Unique PG per test**: Each instance gets `dc-machine-cpg-{timestamp}`
+2. **Fresh placement**: Ensures AWS selects from all available racks
+3. **Asynchronous cleanup**: Background threads handle cleanup without blocking tests
+4. **Graceful shutdown**: Ctrl+C waits for all cleanup tasks to complete
+
+### Cleanup Behavior
+
+- **Instance launch fails**: Placement group deleted immediately (synchronous)
+- **Instance fails tests**: Placement group deletion scheduled in background thread
+- **Background threads**: Check instance status every minute for up to 30 minutes
+- **Automatic deletion**: Placement groups deleted once instances fully terminate
+- **Progress tracking**: Clear console output shows cleanup status
+- **Cleanup script**: Handles multiple timestamped placement groups
+- **Graceful shutdown**: Ctrl+C waits for all background cleanup tasks to complete
+
 ## Next Steps
 
 Once an anchor instance is found:
 
-1. Note its Placement Group location
-2. Launch production instances (c8g.24xlarge/c8g.metal-24xl) in same Placement Group
-3. These co-located instances should have similar low latency characteristics
+1. Note its Placement Group name (includes timestamp)
+2. Launch production instances in the SAME placement group
+3. These co-located instances will have similar low latency characteristics
+4. Keep the anchor instance running to maintain the placement group
