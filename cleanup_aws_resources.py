@@ -5,6 +5,7 @@ Removes all resources created by setup_aws_resources.py
 """
 import boto3
 import json
+import os
 import sys
 import time
 
@@ -21,9 +22,25 @@ def load_config():
         print(f"✗ Error loading config: {e}")
         return None
 
-def terminate_instances(ec2_client, vpc_id):
-    """Terminate all instances in the VPC"""
+def load_champion_state():
+    """Load champion state to avoid terminating champion instances"""
+    champion_file = "./reports/champion_state.json"
+    if os.path.exists(champion_file):
+        try:
+            with open(champion_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️  Could not load champion state: {e}")
+    return {}
+
+def terminate_instances(ec2_client, vpc_id, champion_state):
+    """Terminate all instances in the VPC except champion instances"""
     print("\n1. Terminating EC2 instances...")
+    
+    champion_instance_id = champion_state.get('instance_id')
+    if champion_instance_id:
+        print(f"   🛡️  Protected champion instance: {champion_instance_id}")
+    
     try:
         instances = ec2_client.describe_instances(
             Filters=[
@@ -33,9 +50,21 @@ def terminate_instances(ec2_client, vpc_id):
         )
         
         instance_ids = []
+        champion_skipped = []
+        
         for reservation in instances['Reservations']:
             for instance in reservation['Instances']:
-                instance_ids.append(instance['InstanceId'])
+                instance_id = instance['InstanceId']
+                
+                # Skip champion instances
+                if instance_id == champion_instance_id:
+                    champion_skipped.append(instance_id)
+                    continue
+                    
+                instance_ids.append(instance_id)
+        
+        if champion_skipped:
+            print(f"   🛡️  Skipped {len(champion_skipped)} champion instance(s): {', '.join(champion_skipped)}")
         
         if instance_ids:
             print(f"   Found {len(instance_ids)} instances to terminate")
@@ -45,9 +74,9 @@ def terminate_instances(ec2_client, vpc_id):
             print("   Waiting for instances to terminate...")
             waiter = ec2_client.get_waiter('instance_terminated')
             waiter.wait(InstanceIds=instance_ids)
-            print("   ✓ All instances terminated")
+            print("   ✓ All non-champion instances terminated")
         else:
-            print("   No instances found")
+            print("   No instances to terminate (all are protected champions)")
             
     except Exception as e:
         print(f"   ✗ Error terminating instances: {e}")
@@ -80,9 +109,14 @@ def delete_key_pair(ec2_client, key_name):
     except Exception as e:
         print(f"   ✗ Error deleting key pair: {e}")
 
-def delete_placement_groups(ec2_client):
-    """Delete all dc-machine placement groups"""
+def delete_placement_groups(ec2_client, champion_state):
+    """Delete all dc-machine placement groups except champion placement groups"""
     print("\n4. Deleting placement groups...")
+    
+    champion_pg = champion_state.get('placement_group')
+    if champion_pg:
+        print(f"   🛡️  Protected champion placement group: {champion_pg}")
+    
     try:
         # List all placement groups
         pgs = ec2_client.describe_placement_groups()
@@ -94,8 +128,16 @@ def delete_placement_groups(ec2_client):
             deleted = 0
             in_use = 0
             
+            champion_protected = 0
+            
             for pg_name in dc_pgs:
                 try:
+                    # Skip champion placement groups
+                    if pg_name == champion_pg:
+                        print(f"   🛡️  Skipped champion placement group '{pg_name}'")
+                        champion_protected += 1
+                        continue
+                    
                     # First check if any instances are using this PG
                     instances = ec2_client.describe_instances(
                         Filters=[
@@ -187,8 +229,13 @@ def main():
     if not config:
         return 1
     
+    # Load champion state to protect champions
+    champion_state = load_champion_state()
+    
     print(f"Region: {config.get('region', 'Unknown')}")
     print(f"VPC ID: {config.get('vpc_id', 'Unknown')}")
+    if champion_state.get('instance_id'):
+        print(f"🛡️  Protected Champion: {champion_state['instance_id']} ({champion_state.get('placement_group', 'N/A')})")
     print("="*60)
     
     # Confirm deletion
@@ -205,8 +252,8 @@ def main():
         return 1
     
     # Delete resources in order
-    # 1. Terminate all instances first
-    terminate_instances(ec2_client, config['vpc_id'])
+    # 1. Terminate all instances first (except champions)
+    terminate_instances(ec2_client, config['vpc_id'], champion_state)
     
     # 2. Release EIP
     if 'eip_allocation_id' in config:
@@ -216,8 +263,8 @@ def main():
     if 'key_name' in config:
         delete_key_pair(ec2_client, config['key_name'])
     
-    # 4. Delete placement groups (both old style and new timestamped ones)
-    delete_placement_groups(ec2_client)
+    # 4. Delete placement groups (except champion placement groups)
+    delete_placement_groups(ec2_client, champion_state)
     
     # 5. Delete security group
     if 'security_group_id' in config:

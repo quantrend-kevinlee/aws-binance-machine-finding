@@ -247,7 +247,17 @@ For HFT applications, maintaining the absolute best fstream-mm connection is cri
 1. **Champion Tracking**: Script tracks the instance with the lowest "best latency" for fstream-mm domain
 2. **Champion Protection**: Champions are never terminated, even if they fail overall pass criteria
 3. **Champion Replacement**: When a better instance is found, the old champion is terminated and the new one promoted
-4. **Continuous Improvement**: Search continues indefinitely to find incrementally better champions
+4. **Champion Persistence**: Champions survive script termination, cleanup operations, and system restarts
+5. **Continuous Improvement**: Search continues indefinitely to find incrementally better champions
+
+### Champion Persistence
+
+Champions are protected through multiple mechanisms:
+
+- **State File**: Champion details saved to `reports/champion_state.json`
+- **Startup Recovery**: Script loads existing champion state on restart
+- **Cleanup Protection**: `cleanup_aws_resources.py` skips champion instances and placement groups
+- **EIP Management**: EIP can be unbound from champion but instance remains running
 
 ### Champion Selection Criteria
 
@@ -260,20 +270,47 @@ For HFT applications, maintaining the absolute best fstream-mm connection is cri
 ```
 🏆 New fstream-mm champion! 125.30µs (13.114.195.190)
    Replacing old champion i-abc123 (142.50µs)
+   🛡️ Champion will persist after script termination!
+   💾 Champion state saved to ./reports/champion_state.json
 
 Instance i-def456 is the fstream-mm champion - keeping it running!
   Champion: 125.30µs (13.114.195.190)
+  🛡️ Champion protected: Instance and placement group will persist
+  📤 EIP unbound from champion (can be rebound later for access)
+  💡 To reconnect: Associate EIP to i-def456 and SSH to 125.30µs
+```
+
+### Champion Logging
+
+Dedicated champion events are logged to `champion_log_YYYY-MM-DD.txt`:
+
+```
+2025-07-22T08:45:23+00:00 - INITIAL_CHAMPION
+  New Champion: i-def456 (c8g.large)
+  Best Latency: 125.30µs
+  Optimal IP: 13.114.195.190
+  Placement Group: dc-machine-cpg-1753169400
+  Status: PROTECTED - Will persist after script termination
+--------------------------------------------------------------------------------
 ```
 
 ### Script Exit
 
-When the script exits, it displays current champion status:
+When the script exits, it displays comprehensive champion status:
 
 ```
-🏆 Current fstream-mm champion: i-def456
+🏆 Current fstream-mm champion: i-def456 (c8g.large)
    Best latency: 125.30µs (13.114.195.190)
    Placement Group: dc-machine-cpg-1753169400
-   Keep this instance running for optimal fstream-mm performance!
+   Status: 🛡️ PROTECTED - Will persist after script termination
+
+   📋 Champion Access Instructions:
+   1. To SSH to champion: aws ec2 associate-address --instance-id i-def456 --allocation-id eipalloc-05500f18fa63990b6
+   2. Then SSH to EIP address with key: ~/.ssh/dc-machine
+   3. For production: Use IP 13.114.195.190 for fstream-mm.binance.com connections
+
+   💾 Champion state persisted in: ./reports/champion_state.json
+   📜 Champion log available at: ./reports/champion_log_2025-07-22.txt
 ```
 
 ## IP Pinning for Production
