@@ -19,7 +19,7 @@ PLACEMENT_GROUP_BASE = "dc-machine-cpg" # Placement Group 基礎名稱
 MEDIAN_THRESHOLD_US = 122
 BEST_THRESHOLD_US = 102
 # 定義小型實例類型循環列表
-INSTANCE_TYPES = ["c8g.2xlarge"] # , "c8g.metal-24xl", "c7i.24xlarge", "c7i.metal-24xl"
+INSTANCE_TYPES = ["c8g.medium", "c8g.large", "c8g.xlarge", "c8g.2xlarge", "c8g.4xlarge"] # , "c8g.metal-24xl", "c7i.24xlarge", "c7i.metal-24xl"
 # 報告輸出資料夾
 REPORT_DIR = "./reports"
 CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"
@@ -98,13 +98,20 @@ print(f"Starting small instance search in {BEST_AZ}...")
 anchor_instance_id = None
 anchor_instance_type = None
 
+# fstream-mm champion tracking
+best_fstream_instance_id = None
+best_fstream_placement_group = None
+best_fstream_latency = float("inf")  # Best latency value for fstream-mm
+best_fstream_ip = None
+
 # 若第一次執行今天的檔案 → 寫入 header
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, "w", newline="") as f:
         csv.writer(f).writerow(
             ["timestamp", "instance_id", "instance_type", 
-             "best_median_us", "best_median_ip", "best_median_host",
-             "best_best_us", "best_best_ip", "best_best_host", 
+             "best_median_us_fapi-mm", "best_best_us_fapi-mm", "best_median_ip_fapi-mm", "best_best_ip_fapi-mm",
+             "best_median_us_ws-fapi-mm", "best_best_us_ws-fapi-mm", "best_median_ip_ws-fapi-mm", "best_best_ip_ws-fapi-mm",
+             "best_median_us_fstream-mm", "best_best_us_fstream-mm", "best_median_ip_fstream-mm", "best_best_ip_fstream-mm",
              "passed"]
         )
 
@@ -180,8 +187,9 @@ while True:
                 with open(CSV_FILE, "w", newline="") as f:
                     csv.writer(f).writerow(
                         ["timestamp", "instance_id", "instance_type", 
-                         "best_median_us", "best_median_ip", "best_median_host",
-                         "best_best_us", "best_best_ip", "best_best_host", 
+                         "best_median_us_fapi-mm", "best_best_us_fapi-mm", "best_median_ip_fapi-mm", "best_best_ip_fapi-mm",
+                         "best_median_us_ws-fapi-mm", "best_best_us_ws-fapi-mm", "best_median_ip_ws-fapi-mm", "best_best_ip_ws-fapi-mm",
+                         "best_median_us_fstream-mm", "best_best_us_fstream-mm", "best_median_ip_fstream-mm", "best_best_ip_fstream-mm",
                          "passed"]
                     )
             # 重置統計
@@ -351,15 +359,8 @@ while True:
             time.sleep(2)
             continue
 
-        # Process results - Track best values across all IPs
-        best_median_value = float("inf")
-        best_median_ip = ""
-        best_median_host = ""
-        
-        best_best_value = float("inf") 
-        best_best_ip = ""
-        best_best_host = ""
-        
+        # Process results - Track best values per domain
+        domain_stats = {}
         instance_passed = False
         
         print("\nLatency test results:")
@@ -367,6 +368,14 @@ while True:
             if "error" in host_data:
                 print(f"  {hostname}: {host_data['error']}")
                 continue
+            
+            # Initialize domain tracking
+            domain_stats[hostname] = {
+                "best_median": float("inf"),
+                "best_best": float("inf"),
+                "best_median_ip": "",
+                "best_best_ip": ""
+            }
             
             print(f"  {hostname}:")
             
@@ -379,17 +388,15 @@ while True:
                 
                 print(f"    IP {ip:<15}  median={median:9.2f} µs  best={best:9.2f} µs  passed={ip_passed}")
                 
-                # Track best median across all IPs
-                if median < best_median_value:
-                    best_median_value = median
-                    best_median_ip = ip
-                    best_median_host = hostname
+                # Track best median for this domain
+                if median < domain_stats[hostname]["best_median"]:
+                    domain_stats[hostname]["best_median"] = median
+                    domain_stats[hostname]["best_median_ip"] = ip
                 
-                # Track best "best" value across all IPs
-                if best < best_best_value:
-                    best_best_value = best
-                    best_best_ip = ip
-                    best_best_host = hostname
+                # Track best "best" value for this domain
+                if best < domain_stats[hostname]["best_best"]:
+                    domain_stats[hostname]["best_best"] = best
+                    domain_stats[hostname]["best_best_ip"] = ip
                 
                 # Instance passes if ANY IP meets criteria
                 if ip_passed:
@@ -398,26 +405,47 @@ while True:
         # Log results
         utc_now = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
         print(f"\n[{utc_now}] {instance_id}  {instance_type:<9}")
-        print(f"  Best median: {best_median_value:.2f} µs ({best_median_ip} @ {best_median_host})")
-        print(f"  Best latency: {best_best_value:.2f} µs ({best_best_ip} @ {best_best_host})")
+        
+        # Show per-domain best results
+        for hostname, stats in domain_stats.items():
+            domain_short = hostname.replace(".binance.com", "")
+            print(f"  {domain_short}: median={stats['best_median']:.2f}µs ({stats['best_median_ip']}), best={stats['best_best']:.2f}µs ({stats['best_best_ip']})")
+        
         print(f"  Passed: {instance_passed}")
 
         # Write to CSV
         with open(CSV_FILE, "a", newline="") as f:
-            csv.writer(f).writerow([
-                utc_now, instance_id, instance_type,
-                f"{best_median_value:.2f}", best_median_ip, best_median_host,
-                f"{best_best_value:.2f}", best_best_ip, best_best_host,
-                instance_passed
-            ])
+            # Prepare per-domain data for CSV (in order: fapi-mm, ws-fapi-mm, fstream-mm)
+            domains = ["fapi-mm.binance.com", "ws-fapi-mm.binance.com", "fstream-mm.binance.com"]
+            row_data = [utc_now, instance_id, instance_type]
+            
+            for domain in domains:
+                if domain in domain_stats:
+                    stats = domain_stats[domain]
+                    row_data.extend([
+                        f"{stats['best_median']:.2f}",
+                        f"{stats['best_best']:.2f}",
+                        stats['best_median_ip'],
+                        stats['best_best_ip']
+                    ])
+                else:
+                    # Domain had errors, fill with empty values
+                    row_data.extend(["", "", "", ""])
+            
+            row_data.append(instance_passed)
+            csv.writer(f).writerow(row_data)
         
         # Write detailed results to text file
         txt_file = CSV_FILE.replace(".csv", ".txt")
         with open(txt_file, "a") as f:
             # Write summary line
             f.write(f"[{utc_now}] {instance_id}  {instance_type}\n")
-            f.write(f"  Best median: {best_median_value:.2f} µs ({best_median_ip} @ {best_median_host})\n")
-            f.write(f"  Best latency: {best_best_value:.2f} µs ({best_best_ip} @ {best_best_host})\n")
+            
+            # Write per-domain best results
+            for hostname, stats in domain_stats.items():
+                domain_short = hostname.replace(".binance.com", "")
+                f.write(f"  {domain_short}: median={stats['best_median']:.2f}µs ({stats['best_median_ip']}), best={stats['best_best']:.2f}µs ({stats['best_best_ip']})\n")
+            
             f.write(f"  Passed: {instance_passed}\n")
             
             # Write detailed test results
@@ -438,27 +466,73 @@ while True:
             # Add separator between instances
             f.write("\n" + "="*80 + "\n\n")
             
-        # Save daily statistics
-        if best_median_value < float("inf"):
-            daily_medians.append(best_median_value)
-        if best_best_value < float("inf"):
-            daily_best_latencies.append(best_best_value)
+        # Save daily statistics (use overall best values across all domains)
+        overall_best_median = min((stats["best_median"] for stats in domain_stats.values() if stats["best_median"] < float("inf")), default=float("inf"))
+        overall_best_latency = min((stats["best_best"] for stats in domain_stats.values() if stats["best_best"] < float("inf")), default=float("inf"))
+        
+        if overall_best_median < float("inf"):
+            daily_medians.append(overall_best_median)
+        if overall_best_latency < float("inf"):
+            daily_best_latencies.append(overall_best_latency)
         daily_counts += 1
+
+        # Check for fstream-mm champion
+        fstream_domain = "fstream-mm.binance.com"
+        current_fstream_latency = float("inf")
+        current_fstream_ip = None
+        
+        if fstream_domain in domain_stats and domain_stats[fstream_domain]["best_best"] < float("inf"):
+            current_fstream_latency = domain_stats[fstream_domain]["best_best"]
+            current_fstream_ip = domain_stats[fstream_domain]["best_best_ip"]
+            
+            # Check if this instance is a new fstream-mm champion
+            if current_fstream_latency < best_fstream_latency:
+                print(f"\n🏆 New fstream-mm champion! {current_fstream_latency:.2f}µs ({current_fstream_ip})")
+                
+                # Terminate old champion if exists
+                if best_fstream_instance_id and best_fstream_instance_id != instance_id:
+                    print(f"   Replacing old champion {best_fstream_instance_id} ({best_fstream_latency:.2f}µs)")
+                    try:
+                        ec2.terminate_instances(InstanceIds=[best_fstream_instance_id])
+                        # Schedule cleanup of old champion's placement group
+                        async_cleanup_placement_group(best_fstream_instance_id, best_fstream_placement_group)
+                    except Exception as e:
+                        print(f"   ⚠️  Could not terminate old champion: {e}")
+                
+                # Update champion tracking
+                best_fstream_instance_id = instance_id
+                best_fstream_placement_group = placement_group_name
+                best_fstream_latency = current_fstream_latency
+                best_fstream_ip = current_fstream_ip
+                
+                # Don't terminate this instance - it's the new champion!
+                champion_instance = True
+            else:
+                champion_instance = False
+        else:
+            print(f"\n⚠️  No valid fstream-mm data for instance {instance_id}")
+            champion_instance = False
 
         if instance_passed:
             # Found anchor
             anchor_instance_id = instance_id
             anchor_instance_type = instance_type
             print(f"*** Found anchor instance {instance_id} (type {instance_type}) meeting latency criteria! ***")
-            print(f"Best median: {best_median_value:.2f} µs from {best_median_ip} ({best_median_host})")
-            print(f"Best single handshake: {best_best_value:.2f} µs from {best_best_ip} ({best_best_host})")
+            
+            # Show per-domain results
+            for hostname, stats in domain_stats.items():
+                domain_short = hostname.replace(".binance.com", "")
+                print(f"{domain_short}: median={stats['best_median']:.2f}µs ({stats['best_median_ip']}), best={stats['best_best']:.2f}µs ({stats['best_best_ip']})")
+            
             # Write success report
-            success_report = (f"\n成功找到錨點小型實例！\n"
-                            f"- Instance ID: {anchor_instance_id}\n"
-                            f"- Instance Type: {anchor_instance_type}\n"
-                            f"- Placement Group: {placement_group_name} (AZ {BEST_AZ})\n"
-                            f"- Best median: {best_median_value:.2f} µs from {best_median_ip} ({best_median_host})\n"
-                            f"- Best single handshake: {best_best_value:.2f} µs from {best_best_ip} ({best_best_host})\n")
+            success_report = f"\n成功找到錨點小型實例！\n"
+            success_report += f"- Instance ID: {anchor_instance_id}\n"
+            success_report += f"- Instance Type: {anchor_instance_type}\n"
+            success_report += f"- Placement Group: {placement_group_name} (AZ {BEST_AZ})\n"
+            success_report += f"- Per-domain results:\n"
+            for hostname, stats in domain_stats.items():
+                domain_short = hostname.replace(".binance.com", "")
+                success_report += f"  - {domain_short}: median={stats['best_median']:.2f}µs ({stats['best_median_ip']}), best={stats['best_best']:.2f}µs ({stats['best_best_ip']})\n"
             print(success_report)
             
             # Append to today's report
@@ -469,33 +543,38 @@ while True:
                 rpt.write(success_report)
             break
         else:
-            # Did not meet target, terminate and continue
-            print(f"Instance {instance_id} did not meet latency target. Terminating and continuing...")
-            try:
-                ec2.terminate_instances(InstanceIds=[instance_id])
-                print(f"  ✓ Instance termination initiated")
-            except Exception as e:
-                print(f"[ERROR] Terminating {instance_id} failed: {e}")
-                time.sleep(5)
-                continue
+            # Did not meet target - check if it's the champion before terminating
+            if champion_instance:
+                print(f"Instance {instance_id} is the fstream-mm champion - keeping it running!")
+                print(f"  Champion: {best_fstream_latency:.2f}µs ({best_fstream_ip})")
+                # Keep EIP associated with champion
+            else:
+                print(f"Instance {instance_id} did not meet latency target. Terminating and continuing...")
+                try:
+                    ec2.terminate_instances(InstanceIds=[instance_id])
+                    print(f"  ✓ Instance termination initiated")
+                except Exception as e:
+                    print(f"[ERROR] Terminating {instance_id} failed: {e}")
+                    time.sleep(5)
+                    continue
+                    
+                # Disassociate EIP immediately (this is fast)
+                try:
+                    ec2.disassociate_address(AllocationId=EIP_ALLOC_ID)
+                except:
+                    pass
                 
-            # Disassociate EIP immediately (this is fast)
-            try:
-                ec2.disassociate_address(AllocationId=EIP_ALLOC_ID)
-            except:
-                pass
-            
-            # Schedule placement group deletion in background
-            print(f"Scheduling placement group {placement_group_name} for deletion...")
-            async_cleanup_placement_group(instance_id, placement_group_name)
+                # Schedule placement group deletion in background
+                print(f"Scheduling placement group {placement_group_name} for deletion...")
+                async_cleanup_placement_group(instance_id, placement_group_name)
             
             # Brief pause before next iteration (but don't wait for termination)
             time.sleep(2)
                 
     except KeyboardInterrupt:
         print("\n[CTRL‑C] Graceful shutdown requested…")
-        # If current instance is running and not anchor
-        if 'instance_id' in locals() and instance_id and instance_id != anchor_instance_id:
+        # If current instance is running and not anchor or champion
+        if 'instance_id' in locals() and instance_id and instance_id != anchor_instance_id and instance_id != best_fstream_instance_id:
             print(f"→ Terminating pending instance {instance_id} …")
             try:
                 ec2.terminate_instances(InstanceIds=[instance_id])
@@ -510,6 +589,10 @@ while True:
             if 'placement_group_name' in locals() and placement_group_name:
                 print(f"→ Scheduling cleanup of placement group {placement_group_name} …")
                 async_cleanup_placement_group(instance_id, placement_group_name)
+        elif 'instance_id' in locals() and instance_id == best_fstream_instance_id:
+            print(f"→ Preserving fstream-mm champion {instance_id} (EIP will remain associated)")
+        elif 'instance_id' in locals() and instance_id == anchor_instance_id:
+            print(f"→ Preserving anchor instance {instance_id} (EIP will remain associated)")
         
         # Wait for all cleanup threads to complete
         active_threads = [t for t in cleanup_threads if t.is_alive()]
@@ -545,6 +628,15 @@ if anchor_instance_id:
     print(f"Anchor instance is {anchor_instance_id} ({anchor_instance_type}). Keep it running for stage 3.")
 else:
     print("Search stopped without finding an anchor instance.")
+
+# Show fstream-mm champion status
+if best_fstream_instance_id:
+    print(f"\n🏆 Current fstream-mm champion: {best_fstream_instance_id}")
+    print(f"   Best latency: {best_fstream_latency:.2f}µs ({best_fstream_ip})")
+    print(f"   Placement Group: {best_fstream_placement_group}")
+    print(f"   Keep this instance running for optimal fstream-mm performance!")
+else:
+    print(f"\n⚠️  No fstream-mm champion found during this session.")
 
 # Give background threads a moment to start cleanup before exiting
 if cleanup_threads:

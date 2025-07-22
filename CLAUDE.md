@@ -32,7 +32,7 @@ ANY IP address from the Binance domains must meet ONE of these criteria:
     - Instance names prefixed with Unix timestamp (format: `{timestamp}-DC-Search`)
     - Alternates between instance types (currently c8g.24xlarge/c8g.metal-24xl)
     - Single Elastic IP reused across all test instances
-    - Automatic termination of non-qualifying instances
+    - **fstream-mm Champion System**: Always maintains the instance with the lowest fstream-mm latency
     - **Dynamic Placement Groups**: Each instance gets a unique placement group (`dc-machine-cpg-{timestamp}`)
     - **Asynchronous Cleanup**: Failed instances and their placement groups are cleaned up in background threads
 
@@ -52,9 +52,11 @@ ANY IP address from the Binance domains must meet ONE of these criteria:
     - Tracks best values across all IPs with their source IP and hostname
 
 5. **Reporting**
-    - Enhanced CSV format includes:
-        - Best median value + source IP/host
-        - Best latency value + source IP/host
+    - **Per-domain tracking**: Best median and best latency tracked separately for each Binance service
+    - Enhanced CSV format includes optimal IPs for each domain:
+        - fapi-mm.binance.com (Futures API)
+        - ws-fapi-mm.binance.com (WebSocket stream)
+        - fstream-mm.binance.com (Futures stream)
     - Detailed text logs (`latency_log_YYYY-MM-DD.txt`) with full test results
     - Daily Markdown reports with statistics
     - Automatic daily rollover at midnight
@@ -99,29 +101,37 @@ INSTANCE_TYPES = ["c8g.24xlarge", "c8g.metal-24xl"]  # Or ["c7i.large", "c8g.lar
 6. Read test script from `binance_latency_test.py` and copy to instance via SSH
 7. Execute test script and capture JSON output
 8. Parse JSON results from test script
-9. Evaluate against thresholds (ANY IP meeting criteria = pass)
-10. If passed: Keep instance and placement group as anchor
-11. If failed: 
-    - Terminate instance (non-blocking)
-    - Schedule placement group deletion in background thread
-    - Continue to next test immediately
+9. **Champion Evaluation**: Check if instance has better fstream-mm latency than current champion
+10. **Champion Management**: 
+    - If better → promote to champion, terminate old champion
+    - If worse → check overall pass criteria
+11. **Overall Pass Criteria**: Evaluate against thresholds (ANY IP meeting criteria = pass)
+12. **Instance Disposition**:
+    - If overall pass → keep as anchor, stop searching
+    - If champion → keep running, continue searching
+    - If neither → terminate and continue searching
 
 ## Output Format
 
 ### Console Output
 
+Per-domain best results for optimal IP pinning:
+
 ```
 [2025-07-22T05:35:26+00:00] i-014fc6ce2eed063b7  c8g.24xlarge
-  Best median: 267.20 µs (35.79.37.81 @ fapi-mm.binance.com)
-  Best latency: 167.34 µs (54.199.94.11 @ fapi-mm.binance.com)
+  fapi-mm: median=267.20µs (35.79.37.81), best=167.34µs (54.199.94.11)
+  ws-fapi-mm: median=254.50µs (52.68.15.23), best=152.10µs (52.68.15.23)
+  fstream-mm: median=261.80µs (13.114.195.190), best=158.90µs (18.176.4.238)
   Passed: False
 ```
 
 ### CSV Format
 
+Per-domain tracking for optimal IP selection:
+
 ```csv
-timestamp,instance_id,instance_type,best_median_us,best_median_ip,best_median_host,best_best_us,best_best_ip,best_best_host,passed
-2025-07-22T05:35:26+00:00,i-014fc6ce2eed063b7,c8g.24xlarge,267.20,35.79.37.81,fapi-mm.binance.com,167.34,54.199.94.11,fapi-mm.binance.com,False
+timestamp,instance_id,instance_type,best_median_us_fapi-mm,best_best_us_fapi-mm,best_median_ip_fapi-mm,best_best_ip_fapi-mm,best_median_us_ws-fapi-mm,best_best_us_ws-fapi-mm,best_median_ip_ws-fapi-mm,best_best_ip_ws-fapi-mm,best_median_us_fstream-mm,best_best_us_fstream-mm,best_median_ip_fstream-mm,best_best_ip_fstream-mm,passed
+2025-07-22T05:35:26+00:00,i-014fc6ce2eed063b7,c8g.24xlarge,267.20,167.34,35.79.37.81,54.199.94.11,254.50,152.10,52.68.15.23,52.68.15.23,261.80,158.90,13.114.195.190,18.176.4.238,False
 ```
 
 ## Development History
@@ -136,6 +146,8 @@ timestamp,instance_id,instance_type,best_median_us,best_median_ip,best_median_ho
 6. ✅ **Embedded script → External file**: Test script now loaded from `binance_latency_test.py` file
 7. ✅ **Static placement group → Dynamic placement groups**: Each test uses unique PG for rack diversity
 8. ✅ **Synchronous cleanup → Asynchronous cleanup**: Background threads handle termination/deletion
+9. ✅ **Global best tracking → Per-domain tracking**: Track optimal IPs separately for each Binance service
+10. ✅ **Simple pass/fail → Champion system**: Maintain best fstream-mm instance while continuing search
 
 ### Key Files
 
@@ -224,11 +236,102 @@ AWS cluster placement groups place instances on the same physical rack for lowes
 - **Cleanup script**: Handles multiple timestamped placement groups
 - **Graceful shutdown**: Ctrl+C waits for all background cleanup tasks to complete
 
+## fstream-mm Champion System
+
+### Purpose
+
+For HFT applications, maintaining the absolute best fstream-mm connection is critical. The champion system ensures you always have access to the lowest-latency fstream-mm instance, even while continuing to search for better options.
+
+### How It Works
+
+1. **Champion Tracking**: Script tracks the instance with the lowest "best latency" for fstream-mm domain
+2. **Champion Protection**: Champions are never terminated, even if they fail overall pass criteria
+3. **Champion Replacement**: When a better instance is found, the old champion is terminated and the new one promoted
+4. **Continuous Improvement**: Search continues indefinitely to find incrementally better champions
+
+### Champion Selection Criteria
+
+- **Metric**: Lowest "best latency" value for fstream-mm.binance.com domain
+- **Comparison**: New instance must have lower latency than current champion
+- **Fallback**: If fstream-mm data is missing/invalid, instance cannot become champion
+
+### Console Output
+
+```
+🏆 New fstream-mm champion! 125.30µs (13.114.195.190)
+   Replacing old champion i-abc123 (142.50µs)
+
+Instance i-def456 is the fstream-mm champion - keeping it running!
+  Champion: 125.30µs (13.114.195.190)
+```
+
+### Script Exit
+
+When the script exits, it displays current champion status:
+
+```
+🏆 Current fstream-mm champion: i-def456
+   Best latency: 125.30µs (13.114.195.190)
+   Placement Group: dc-machine-cpg-1753169400
+   Keep this instance running for optimal fstream-mm performance!
+```
+
+## IP Pinning for Production
+
+### Using Per-Domain Results
+
+The CSV output provides optimal IPs for each Binance service. Use these to pin connections:
+
+```python
+# From CSV results, pin each service to its optimal IP:
+fapi_optimal_ip = "35.79.37.81"      # best_median_ip_fapi-mm
+ws_optimal_ip = "52.68.15.23"        # best_median_ip_ws-fapi-mm  
+stream_optimal_ip = "13.114.195.190" # best_median_ip_fstream-mm
+
+# Examples:
+# 1. /etc/hosts method:
+#    35.79.37.81 fapi-mm.binance.com
+#    52.68.15.23 ws-fapi-mm.binance.com
+#    13.114.195.190 fstream-mm.binance.com
+
+# 2. Direct IP connection with Host header:
+#    wss://52.68.15.23/ws (with Host: ws-fapi-mm.binance.com)
+```
+
+### Benefits:
+- **Service-specific optimization**: Each service pinned to its optimal IP
+- **Consistent latency**: Avoid DNS lookup variations
+- **Maximum performance**: Use best performing path for each service
+
 ## Next Steps
 
-Once an anchor instance is found:
+### If Anchor Instance Found (meets pass criteria):
 
 1. Note its Placement Group name (includes timestamp)
-2. Launch production instances in the SAME placement group
-3. These co-located instances will have similar low latency characteristics
-4. Keep the anchor instance running to maintain the placement group
+2. Extract optimal IPs for each domain from CSV
+3. Launch production instances in the SAME placement group
+4. Configure applications to use the optimal IPs
+5. Keep the anchor instance running to maintain the placement group
+
+### If Only Champion Found (best fstream-mm, no anchor):
+
+1. **Use the champion for fstream-mm**: Configure fstream-mm connections to use champion's optimal IP
+2. **Continue searching**: Run the script again to find an anchor or better champion
+3. **Production strategy**: 
+   - Use champion for fstream-mm.binance.com connections
+   - Use separate instances/IPs for fapi-mm and ws-fapi-mm if needed
+   - Launch additional instances in champion's placement group for scaling
+
+### Champion Utilization:
+
+```python
+# Use champion's fstream-mm IP for optimal latency
+champion_fstream_ip = "13.114.195.190"  # From champion results
+
+# Pin fstream-mm connections to champion IP
+# Method 1: /etc/hosts
+echo "13.114.195.190 fstream-mm.binance.com" >> /etc/hosts
+
+# Method 2: Direct IP connection
+# wss://13.114.195.190/ws (with Host: fstream-mm.binance.com)
+```

@@ -1,5 +1,5 @@
 import socket, subprocess, statistics, time, sys, json
-ATTEMPTS = 10000
+ATTEMPTS = 1000
 TIMEOUT = 1
 HOSTNAMES = ["fapi-mm.binance.com", "ws-fapi-mm.binance.com", "fstream-mm.binance.com"]
 
