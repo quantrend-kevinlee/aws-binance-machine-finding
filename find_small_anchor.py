@@ -6,22 +6,41 @@ import subprocess
 import json
 import threading
 
-# ======== 使用前需要配置的變數 ========
-REGION = "ap-northeast-1"
-BEST_AZ = "ap-northeast-1a"             # 幣安所在 AZ
-SUBNET_ID = "subnet-07954f36129e8beb1"           # 該AZ下的子網ID
-SECURITY_GROUP_ID = "sg-080dea8b90091be0b"       # 安全組ID (與前階段相同)
-KEY_NAME = "dc-machine"             # SSH金鑰名稱
-KEY_PATH = os.path.expanduser("~/.ssh/dc-machine")  # SSH私鑰路徑
-EIP_ALLOC_ID = "eipalloc-05500f18fa63990b6"  # 彈性IP Allocation ID
-PLACEMENT_GROUP_BASE = "dc-machine-cpg" # Placement Group 基礎名稱
-# Latency thresholds
-MEDIAN_THRESHOLD_US = 122
-BEST_THRESHOLD_US = 102
-# 定義小型實例類型循環列表
-INSTANCE_TYPES = ["c8g.medium", "c8g.large", "c8g.xlarge", "c8g.2xlarge", "c8g.4xlarge"] # , "c8g.metal-24xl", "c7i.24xlarge", "c7i.metal-24xl"
-# 報告輸出資料夾
-REPORT_DIR = "./reports"
+def load_config():
+    """Load shared configuration"""
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+            # Expand user path for key
+            if config['key_path'].startswith('~'):
+                config['key_path'] = os.path.expanduser(config['key_path'])
+            return config
+    except FileNotFoundError:
+        print("❌ Configuration file 'config.json' not found")
+        print("   Make sure config.json exists in the current directory")
+        exit(1)
+    except Exception as e:
+        print(f"❌ Error loading config: {e}")
+        exit(1)
+
+# Load configuration
+CONFIG = load_config()
+
+# Extract configuration values
+REGION = CONFIG['region']
+BEST_AZ = CONFIG['availability_zone']
+SUBNET_ID = CONFIG['subnet_id']
+SECURITY_GROUP_ID = CONFIG['security_group_id']
+KEY_NAME = CONFIG['key_name']
+KEY_PATH = CONFIG['key_path']
+EIP_ALLOC_ID = CONFIG['eip_allocation_id']
+PLACEMENT_GROUP_BASE = CONFIG['placement_group_base']
+MEDIAN_THRESHOLD_US = CONFIG['latency_thresholds']['median_us']
+BEST_THRESHOLD_US = CONFIG['latency_thresholds']['best_us']
+INSTANCE_TYPES = CONFIG['instance_types']
+REPORT_DIR = CONFIG['report_dir']
+
+# Create dynamic file paths
 CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"
 CHAMPION_STATE_FILE = f"{REPORT_DIR}/champion_state.json"
 CHAMPION_LOG_FILE = f"{REPORT_DIR}/champion_log_{datetime.date.today()}.txt"
@@ -525,8 +544,8 @@ while True:
 
         # Write to CSV
         with open(CSV_FILE, "a", newline="") as f:
-            # Prepare per-domain data for CSV (in order: fapi-mm, ws-fapi-mm, fstream-mm)
-            domains = ["fapi-mm.binance.com", "ws-fapi-mm.binance.com", "fstream-mm.binance.com"]
+            # Prepare per-domain data for CSV
+            domains = CONFIG['domains']
             row_data = [utc_now, instance_id, instance_type]
             
             for domain in domains:
@@ -587,7 +606,7 @@ while True:
         daily_counts += 1
 
         # Check for fstream-mm champion
-        fstream_domain = "fstream-mm.binance.com"
+        fstream_domain = CONFIG['domains'][2]  # fstream-mm.binance.com
         current_fstream_latency = float("inf")
         current_fstream_ip = None
         

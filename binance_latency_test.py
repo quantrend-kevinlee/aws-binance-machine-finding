@@ -1,7 +1,20 @@
-import socket, subprocess, statistics, time, sys, json
+import socket, subprocess, statistics, time, sys, json, os
+
+def load_config():
+    """Load shared configuration"""
+    try:
+        with open('config.json', 'r') as f:
+            return json.load(f)
+    except:
+        # Fallback to hardcoded values if config not found
+        return {
+            'domains': ["fapi-mm.binance.com", "ws-fapi-mm.binance.com", "fstream-mm.binance.com"]
+        }
+
+CONFIG = load_config()
 ATTEMPTS = 1000
 TIMEOUT = 1
-HOSTNAMES = ["fapi-mm.binance.com", "ws-fapi-mm.binance.com", "fstream-mm.binance.com"]
+HOSTNAMES = CONFIG['domains']
 
 def resolve_ips(hostname):
     ips = []

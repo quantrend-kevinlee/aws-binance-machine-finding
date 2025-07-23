@@ -4,12 +4,31 @@ Check and enable DNS settings for VPC
 """
 import boto3
 import sys
+import json
+import os
 
-# Configuration
-REGION = "ap-northeast-1"
-SUBNET_ID = "subnet-07954f36129e8beb1"  # From your config
+def load_config():
+    """Load shared configuration"""
+    try:
+        with open('config.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("❌ Configuration file 'config.json' not found")
+        print("   Make sure config.json exists in the current directory")
+        return None
+    except Exception as e:
+        print(f"❌ Error loading config: {e}")
+        return None
 
 def main():
+    # Load configuration
+    config = load_config()
+    if not config:
+        return 1
+    
+    REGION = config['region']
+    SUBNET_ID = config['subnet_id']
+    
     ec2 = boto3.client('ec2', region_name=REGION)
     
     # Get VPC ID from subnet
