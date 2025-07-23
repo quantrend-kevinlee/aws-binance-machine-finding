@@ -58,8 +58,8 @@ ANY IP address from the Binance domains must meet ONE of these criteria:
         - ws-fapi-mm.binance.com (WebSocket stream)
         - fstream-mm.binance.com (Futures stream)
     - Detailed text logs (`latency_log_YYYY-MM-DD.txt`) with full test results
-    - Daily Markdown reports with statistics
-    - Automatic daily rollover at midnight
+    - Champion state (`champion_state.json`) tracks best instances for each domain
+    - CSV files automatically roll over at midnight
 
 ## AWS Resources Required
 
@@ -122,14 +122,15 @@ DOMAINS = [
 6. Copy `binance_latency_test.py` to instance via SSH
 7. Execute test script and capture JSON output
 8. Parse JSON results from test script
-9. **Champion Evaluation**: Check if instance has better fstream-mm latency than current champion
+9. **Champion Evaluation**: For each domain, check if instance has better median latency than current champion
 10. **Champion Management**: 
-    - If better → promote to champion, terminate old champion
-    - If worse → check overall pass criteria
+    - If better median → promote to champion for that domain
+    - Check if old champion still champions other domains before terminating
+    - One instance can be champion for multiple domains
 11. **Overall Pass Criteria**: Evaluate against thresholds (ANY IP meeting criteria = pass)
 12. **Instance Disposition**:
     - If overall pass → keep as anchor, stop searching
-    - If champion → keep running, continue searching
+    - If champion for any domain → keep running, continue searching
     - If neither → terminate and continue searching
 
 ## Output Format

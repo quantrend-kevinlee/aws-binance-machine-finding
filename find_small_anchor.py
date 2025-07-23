@@ -21,11 +21,11 @@ def load_config():
                 config['key_path'] = os.path.expanduser(config['key_path'])
             return config
     except FileNotFoundError:
-        print("❌ Configuration file 'config.json' not found")
+        print("[ERROR] Configuration file 'config.json' not found")
         print("   Make sure config.json exists in the current directory")
         exit(1)
     except Exception as e:
-        print(f"❌ Error loading config: {e}")
+        print(f"[ERROR] Error loading config: {e}")
         exit(1)
 
 # Load configuration
@@ -50,7 +50,7 @@ CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"
 CHAMPION_STATE_FILE = f"{REPORT_DIR}/champion_state.json"
 CHAMPION_LOG_FILE = f"{REPORT_DIR}/champion_log_{datetime.date.today()}.txt"
 
-# 自動建立資料夾（若已存在不會報錯）
+# Create directory automatically (won't error if exists)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 # Load latency test script from binance_latency_test.py
@@ -63,116 +63,141 @@ USER_DATA_SCRIPT = """#!/bin/bash
 yum install -y -q bind-utils python3
 """
 
-# 初始化 AWS 客戶端
+# Initialize AWS client
 ec2 = boto3.client('ec2', region_name=REGION)
 
 # Track background cleanup threads
 cleanup_threads = []
 
 def load_champion_state():
-    """Load existing champion state from file and validate instance is still running"""
+    """Load existing champion state from file and validate instances are still running"""
     if os.path.exists(CHAMPION_STATE_FILE):
         try:
             with open(CHAMPION_STATE_FILE, 'r') as f:
                 state = json.load(f)
-                print(f"📖 Loaded existing champion state:")
-                print(f"   Instance: {state.get('instance_id', 'N/A')}")
-                print(f"   Latency: {state.get('latency', 'N/A')}µs ({state.get('ip', 'N/A')})")
-                print(f"   Placement Group: {state.get('placement_group', 'N/A')}")
-                print(f"   Established: {state.get('timestamp', 'N/A')}")
                 
-                # Validate champion instance is still running
-                instance_id = state.get('instance_id')
-                placement_group = state.get('placement_group')
+                print(f"[LOAD] Loaded champion state (format v{state.get('format_version', '1.0')}):")
                 
-                if instance_id and placement_group:
-                    print(f"🔍 Validating champion instance status...")
-                    
+                champions = state.get('champions', {})
+                if not champions:
+                    return {"format_version": "2.0", "champions": {}}
+                
+                # Display all champions
+                for domain, info in champions.items():
+                    print(f"   {domain}:")
+                    print(f"     Instance: {info.get('instance_id', 'N/A')}")
+                    print(f"     Median: {info.get('median_latency', 'N/A')}µs, Best: {info.get('best_latency', 'N/A')}µs")
+                    print(f"     IP: {info.get('ip', 'N/A')}")
+                    print(f"     PG: {info.get('placement_group', 'N/A')}")
+                
+                # Validate all champion instances
+                print(f"\n[CHECK] Validating champion instances...")
+                instances_to_check = {}
+                for domain, info in champions.items():
+                    instance_id = info.get('instance_id')
+                    if instance_id and instance_id not in instances_to_check:
+                        instances_to_check[instance_id] = [domain]
+                    elif instance_id:
+                        instances_to_check[instance_id].append(domain)
+                
+                valid_champions = {}
+                for instance_id, domains in instances_to_check.items():
                     try:
-                        # Check instance status
                         response = ec2.describe_instances(InstanceIds=[instance_id])
-                        
                         if response['Reservations']:
                             instance = response['Reservations'][0]['Instances'][0]
                             instance_state = instance['State']['Name']
                             
                             if instance_state == 'running':
-                                print(f"   ✓ Champion instance is running and valid")
-                                return state
+                                print(f"   [OK] Instance {instance_id} is running (champions: {', '.join(domains)})")
+                                # Keep this instance's champion entries
+                                for domain in domains:
+                                    valid_champions[domain] = champions[domain]
                             else:
-                                print(f"   ⚠️  Champion instance is {instance_state} - cleaning up...")
-                                
-                                # Terminate instance if it's not terminated already
+                                print(f"   [WARN]  Instance {instance_id} is {instance_state} - removing from champions")
+                                # Schedule cleanup if needed
                                 if instance_state not in ['terminated', 'terminating']:
                                     try:
                                         ec2.terminate_instances(InstanceIds=[instance_id])
-                                        print(f"   ✓ Terminated invalid champion instance")
-                                    except Exception as term_e:
-                                        print(f"   ⚠️  Could not terminate champion instance: {term_e}")
-                                
+                                    except:
+                                        pass
                                 # Schedule placement group cleanup
-                                print(f"   🧹 Scheduling placement group cleanup...")
-                                async_cleanup_placement_group(instance_id, placement_group)
+                                for domain in domains:
+                                    pg = champions[domain].get('placement_group')
+                                    if pg:
+                                        async_cleanup_placement_group(instance_id, pg)
+                                        break  # Only need to clean up PG once
                         else:
-                            print(f"   ⚠️  Champion instance not found - cleaning up...")
-                            
-                        # Clear invalid champion state
-                        try:
-                            os.remove(CHAMPION_STATE_FILE)
-                            print(f"   🗑️  Cleared invalid champion state file")
-                        except Exception as rm_e:
-                            print(f"   ⚠️  Could not remove champion state file: {rm_e}")
-                        
-                        return {}
-                        
+                            print(f"   [WARN]  Instance {instance_id} not found - removing from champions")
                     except Exception as e:
                         if 'InvalidInstanceID.NotFound' in str(e):
-                            print(f"   ⚠️  Champion instance not found in AWS - clearing state")
-                            try:
-                                os.remove(CHAMPION_STATE_FILE)
-                                print(f"   🗑️  Cleared invalid champion state file")
-                            except:
-                                pass
-                            return {}
+                            print(f"   [WARN]  Instance {instance_id} not found in AWS - removing from champions")
                         else:
-                            print(f"   ⚠️  Error validating champion instance: {e}")
-                            print(f"   📋 Keeping existing state - manual verification may be needed")
-                            return state
-                else:
-                    print(f"   ⚠️  Champion state missing instance_id or placement_group")
-                    return {}
-                    
+                            print(f"   [WARN]  Error checking {instance_id}: {e} - keeping in champions")
+                            # Keep on error to be safe
+                            for domain in domains:
+                                valid_champions[domain] = champions[domain]
+                
+                # Update state with only valid champions
+                state['champions'] = valid_champions
+                
+                # Save cleaned state if any champions were removed
+                if len(valid_champions) < len(champions):
+                    with open(CHAMPION_STATE_FILE, 'w') as f:
+                        json.dump(state, f, indent=2)
+                    print(f"   [SAVE] Updated champion state file with {len(valid_champions)} valid champions")
+                
+                return state
+                
         except Exception as e:
-            print(f"⚠️  Could not load champion state: {e}")
-    return {}
+            print(f"[WARN]  Could not load champion state: {e}")
+    
+    # Return empty state with current format version
+    return {"format_version": "2.0", "champions": {}}
 
-def save_champion_state(instance_id, placement_group, latency, ip, instance_type):
-    """Save champion state to file"""
-    state = {
-        "instance_id": instance_id,
-        "placement_group": placement_group, 
-        "latency": latency,
-        "ip": ip,
-        "instance_type": instance_type,
-        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-    }
+def save_champions_state(current_state, domain_updates):
+    """Save champion state for specific domains
+    Args:
+        current_state: Current state dict with format_version and champions
+        domain_updates: Dict of domain -> champion info to update
+    """
     try:
+        # Start with current state
+        state = current_state.copy()
+        if 'champions' not in state:
+            state['champions'] = {}
+        
+        # Update specific domains
+        for domain, info in domain_updates.items():
+            state['champions'][domain] = info
+        
+        # Ensure format version
+        state['format_version'] = "2.0"
+        
+        # Save to file
         with open(CHAMPION_STATE_FILE, 'w') as f:
             json.dump(state, f, indent=2)
-        print(f"💾 Champion state saved to {CHAMPION_STATE_FILE}")
+        
+        print(f"[SAVE] Champion state saved to {CHAMPION_STATE_FILE}")
+        print(f"   Updated domains: {', '.join(domain_updates.keys())}")
+        
     except Exception as e:
-        print(f"⚠️  Could not save champion state: {e}")
+        print(f"[WARN]  Could not save champion state: {e}")
 
-def log_champion_event(instance_id, instance_type, latency, ip, placement_group, old_champion=None):
+def log_champion_event(domain, instance_id, instance_type, median_latency, best_latency, ip, placement_group, old_champion=None):
     """Log champion events to dedicated champion log file"""
     timestamp = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
     
     with open(CHAMPION_LOG_FILE, "a") as f:
         f.write(f"\n{timestamp}\n")
+        f.write(f"  Domain: {domain}\n")
         f.write(f"  New Champion: {instance_id} ({instance_type})\n")
-        f.write(f"  fstream-mm Best Latency: {latency:.2f}µs\n")
-        f.write(f"  fstream-mm Optimal IP: {ip}\n")
+        f.write(f"  Median Latency: {median_latency:.2f}µs\n")
+        f.write(f"  Best Latency: {best_latency:.2f}µs\n")
+        f.write(f"  Optimal IP: {ip}\n")
         f.write(f"  Placement Group: {placement_group}\n")
+        if old_champion:
+            f.write(f"  Replaced: {old_champion['instance_id']} (median: {old_champion['median_latency']:.2f}µs)\n")
         f.write("-" * 80 + "\n")
 
 def async_cleanup_placement_group(instance_id, placement_group_name):
@@ -200,13 +225,13 @@ def async_cleanup_placement_group(instance_id, placement_group_name):
             
             # Now delete the placement group
             thread_ec2.delete_placement_group(GroupName=placement_group_name)
-            print(f"[Background] ✓ Successfully deleted placement group {placement_group_name}")
+            print(f"[Background] [OK] Successfully deleted placement group {placement_group_name}")
             
         except Exception as e:
             if 'Max attempts exceeded' in str(e):
-                print(f"[Background] ⚠️ Timeout: Instance {instance_id} still terminating after 30 minutes")
+                print(f"[Background] [WARN] Timeout: Instance {instance_id} still terminating after 30 minutes")
             else:
-                print(f"[Background] ⚠️ Failed to delete placement group {placement_group_name}: {e}")
+                print(f"[Background] [WARN] Failed to delete placement group {placement_group_name}: {e}")
         
         # Thread will automatically terminate here when function returns
     
@@ -217,28 +242,20 @@ def async_cleanup_placement_group(instance_id, placement_group_name):
     cleanup_threads.append(thread)
     return thread
 
-# 統計數據初始化
+# CSV file date tracking
 start_date = datetime.date.today()
-daily_counts = 0
-daily_medians = []     # 收集當天每台實例的「全域中位數」延遲
-daily_best_latencies = []  # 收集當天每台實例的最低單次延遲
-daily_types = {t: 0 for t in INSTANCE_TYPES}  # 各類型嘗試計數
 
-instance_index = 0  # 用於輪流選取實例類型
+instance_index = 0  # For rotating instance type selection
 
 print(f"Starting small instance search in {BEST_AZ}...")
 anchor_instance_id = None
 anchor_instance_type = None
 
-# fstream-mm champion tracking - load existing state
+# Multi-domain champion tracking - load existing state
 champion_state = load_champion_state()
-best_fstream_instance_id = champion_state.get("instance_id")
-best_fstream_placement_group = champion_state.get("placement_group")
-best_fstream_latency = champion_state.get("latency", float("inf"))
-best_fstream_ip = champion_state.get("ip")
-best_fstream_instance_type = champion_state.get("instance_type")
+domain_champions = champion_state.get("champions", {})
 
-# 若第一次執行今天的檔案 → 寫入 header
+# If first execution today, write CSV header
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, "w", newline="") as f:
         csv.writer(f).writerow(
@@ -282,40 +299,9 @@ def wait_for_ssh(ip, max_attempts=30):
 
 while True:
     try:
-        # 每日檢查：如跨天則輸出昨天報告並重置計數
+        # Daily check: if date changed, reset CSV file
         today = datetime.date.today()
         if today != start_date:
-            # 輸出昨天的報告
-            report_date = start_date
-            report_filename = f"{REPORT_DIR}/report-{report_date}.md"
-            try:
-                with open(report_filename, "w") as rpt:
-                    rpt.write(f"# Search Report {report_date}\n\n")
-                    rpt.write(f"## Small Instance Search (Placement Group base: '{PLACEMENT_GROUP_BASE}')\n")
-                    rpt.write(f"- **Instances tested**: {daily_counts}\n")
-                    for t, count in daily_types.items():
-                        rpt.write(f"  - {t}: {count} instances\n")
-                    if daily_medians:
-                        fastest = min(daily_medians)
-                        fastest_index = daily_medians.index(fastest)
-                        fastest_best = daily_best_latencies[fastest_index]
-                        rpt.write(f"- **Fastest instance median latency**: {fastest:.2f} µs (best single handshake {fastest_best:.2f} µs)\n")
-                        median_of_medians = statistics.median(daily_medians)
-                        rpt.write(f"- **Median of all medians**: {median_of_medians:.2f} µs\n")
-                        # 分佈: 加上樣本不足保護
-                        if len(daily_medians) >= 4:
-                            d0, d1, d2 = statistics.quantiles(daily_medians, n=4)
-                            rpt.write(f"- **Latency distribution**: {d0:.1f}/{d1:.1f}/{d2:.1f} µs\n")
-                        else:
-                            rpt.write("- **Latency distribution**: N/A (< 4 samples)\n")
-
-                    else:
-                        rpt.write("- No instances tested today.\n")
-                print(f"[REPORT] Daily report generated: {report_filename}")
-            except Exception as e:
-                print(f"[ERROR] 無法寫入日報表: {e}")
-
-            # 產生新 CSV
             CSV_FILE = f"{REPORT_DIR}/latency_log_{today}.csv"
             if not os.path.exists(CSV_FILE):
                 with open(CSV_FILE, "w", newline="") as f:
@@ -326,16 +312,11 @@ while True:
                          "best_median_us_fstream-mm", "best_best_us_fstream-mm", "best_median_ip_fstream-mm", "best_best_ip_fstream-mm",
                          "passed"]
                     )
-            # 重置統計
+            # Reset date
             start_date = today
-            daily_counts = 0
-            daily_medians = []
-            daily_best_latencies = []
-            daily_types = {t: 0 for t in INSTANCE_TYPES}
 
         instance_type = INSTANCE_TYPES[instance_index]
         instance_index = (instance_index + 1) % len(INSTANCE_TYPES)
-        daily_types[instance_type] += 1
 
         # Create placement group with timestamp
         unix_timestamp = int(time.time())
@@ -344,7 +325,7 @@ while True:
         print(f"\nCreating placement group {placement_group_name}...")
         try:
             ec2.create_placement_group(GroupName=placement_group_name, Strategy='cluster')
-            print(f"  ✓ Created placement group")
+            print(f"  [OK] Created placement group")
             time.sleep(2)  # Give AWS a moment to register the PG
         except Exception as e:
             print(f"[ERROR] Failed to create placement group: {e}")
@@ -380,25 +361,25 @@ while True:
             print(f"Deleting unused placement group {placement_group_name}...")
             try:
                 ec2.delete_placement_group(GroupName=placement_group_name)
-                print(f"  ✓ Deleted placement group")
+                print(f"  [OK] Deleted placement group")
             except Exception as del_err:
-                print(f"  ⚠️  Could not delete placement group: {del_err}")
+                print(f"  [WARN]  Could not delete placement group: {del_err}")
             
-            # 若是容量或佈局錯誤，換下一個實例類型重試
+            # If capacity or placement error, try next instance type
             if ("Insufficient capacity" in err) or ("Placement" in err) or ("VcpuLimitExceeded" in err):
                 print(" -> Capacity/limit issue, will try next instance type.")
                 instance_index = (instance_index + 1) % len(INSTANCE_TYPES)
                 time.sleep(2)
                 continue
             else:
-                # 其他錯誤，等待幾秒再重試
+                # Other errors, wait a few seconds and retry
                 time.sleep(5)
                 continue
 
         instance_id = resp['Instances'][0]['InstanceId']
         print(f"Instance {instance_id} launched.")
 
-        # 等待實例狀態為 running
+        # Wait for instance state to be running
         try:
             ec2.get_waiter('instance_running').wait(
                 InstanceIds=[instance_id],
@@ -406,7 +387,7 @@ while True:
         except Exception as e:
             print(f"[WARN] Wait for running failed: {e}")
         
-        # 附加 EIP 到該實例
+        # Attach EIP to instance
         associated = False
         for attempt in range(3):
             try:
@@ -599,63 +580,84 @@ while True:
             # Add separator between instances
             f.write("\n" + "="*80 + "\n\n")
             
-        # Save daily statistics (use overall best values across all domains)
-        overall_best_median = min((stats["best_median"] for stats in domain_stats.values() if stats["best_median"] < float("inf")), default=float("inf"))
-        overall_best_latency = min((stats["best_best"] for stats in domain_stats.values() if stats["best_best"] < float("inf")), default=float("inf"))
+        # Check for champions across all domains (using median latency)
+        new_champions = {}  # Track which domains got new champions
+        replaced_instances = set()  # Track instances that were replaced
         
-        if overall_best_median < float("inf"):
-            daily_medians.append(overall_best_median)
-        if overall_best_latency < float("inf"):
-            daily_best_latencies.append(overall_best_latency)
-        daily_counts += 1
-
-        # Check for fstream-mm champion
-        fstream_domain = DOMAINS[0]  # fstream-mm.binance.com
-        current_fstream_latency = float("inf")
-        current_fstream_ip = None
-        
-        if fstream_domain in domain_stats and domain_stats[fstream_domain]["best_best"] < float("inf"):
-            current_fstream_latency = domain_stats[fstream_domain]["best_best"]
-            current_fstream_ip = domain_stats[fstream_domain]["best_best_ip"]
+        for domain in DOMAINS:
+            if domain not in domain_stats or domain_stats[domain]["best_median"] >= float("inf"):
+                print(f"\n[WARN]  No valid data for {domain} on instance {instance_id}")
+                continue
+                
+            current_median = domain_stats[domain]["best_median"]
+            current_best = domain_stats[domain]["best_best"]
+            current_ip = domain_stats[domain]["best_median_ip"]
             
-            # Check if this instance is a new fstream-mm champion
-            if current_fstream_latency < best_fstream_latency:
-                print(f"\n🏆 New fstream-mm champion! {current_fstream_latency:.2f}µs ({current_fstream_ip})")
+            # Get current champion for this domain
+            current_champion = domain_champions.get(domain, {})
+            champion_median = current_champion.get("median_latency", float("inf"))
+            
+            # Check if this instance beats the current champion
+            if current_median < champion_median:
+                print(f"\n[CHAMPION] New {domain} champion! Median: {current_median:.2f}µs (best: {current_best:.2f}µs) on {current_ip}")
                 
-                # Prepare old champion info for logging
+                # Prepare old champion info
                 old_champion = None
-                if best_fstream_instance_id and best_fstream_instance_id != instance_id:
+                if current_champion and current_champion.get("instance_id") != instance_id:
                     old_champion = {
-                        "instance_id": best_fstream_instance_id,
-                        "latency": best_fstream_latency
+                        "instance_id": current_champion["instance_id"],
+                        "median_latency": champion_median
                     }
-                    try:
-                        ec2.terminate_instances(InstanceIds=[best_fstream_instance_id])
-                        # Schedule cleanup of old champion's placement group
-                        async_cleanup_placement_group(best_fstream_instance_id, best_fstream_placement_group)
-                    except Exception as e:
-                        print(f"   ⚠️  Could not terminate old champion: {e}")
+                    replaced_instances.add(current_champion["instance_id"])
+                    print(f"   Replacing: {old_champion['instance_id']} (median: {champion_median:.2f}µs)")
                 
-                # Update champion tracking
-                best_fstream_instance_id = instance_id
-                best_fstream_placement_group = placement_group_name
-                best_fstream_latency = current_fstream_latency
-                best_fstream_ip = current_fstream_ip
-                best_fstream_instance_type = instance_type
-                
-                # Save champion state to persist after script termination
-                save_champion_state(instance_id, placement_group_name, current_fstream_latency, current_fstream_ip, instance_type)
+                # Record new champion for this domain
+                new_champions[domain] = {
+                    "instance_id": instance_id,
+                    "placement_group": placement_group_name,
+                    "median_latency": current_median,
+                    "best_latency": current_best,
+                    "ip": current_ip,
+                    "instance_type": instance_type,
+                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+                }
                 
                 # Log champion event
-                log_champion_event(instance_id, instance_type, current_fstream_latency, current_fstream_ip, placement_group_name, old_champion)
-                
-                # Don't terminate this instance - it's the new champion!
-                champion_instance = True
+                log_champion_event(domain, instance_id, instance_type, current_median, current_best, 
+                                 current_ip, placement_group_name, old_champion)
+        
+        # Update champion state if we have new champions
+        if new_champions:
+            save_champions_state(champion_state, new_champions)
+            # Update our local state
+            domain_champions.update(new_champions)
+            
+        # Determine which replaced instances can be terminated
+        # Helper function to check if an instance is still a champion for any domain
+        def get_instance_domains(instance_id):
+            return [d for d, info in domain_champions.items() if info.get("instance_id") == instance_id]
+        
+        # Terminate replaced instances that are no longer champions for any domain
+        for old_instance_id in replaced_instances:
+            remaining_domains = get_instance_domains(old_instance_id)
+            if not remaining_domains:
+                print(f"\n[DELETE]  Terminating {old_instance_id} - no longer champion for any domain")
+                try:
+                    ec2.terminate_instances(InstanceIds=[old_instance_id])
+                    # Find and schedule cleanup of its placement group
+                    for info in domain_champions.values():
+                        if info.get("instance_id") == old_instance_id:
+                            pg = info.get("placement_group")
+                            if pg:
+                                async_cleanup_placement_group(old_instance_id, pg)
+                                break
+                except Exception as e:
+                    print(f"   [WARN]  Could not terminate old champion: {e}")
             else:
-                champion_instance = False
-        else:
-            print(f"\n⚠️  No valid fstream-mm data for instance {instance_id}")
-            champion_instance = False
+                print(f"\n[PROTECTED]  Keeping {old_instance_id} - still champion for: {', '.join(remaining_domains)}")
+        
+        # Check if current instance is a champion for any domain
+        champion_instance = any(info.get("instance_id") == instance_id for info in domain_champions.values())
 
         if instance_passed:
             # Found anchor
@@ -669,7 +671,7 @@ while True:
                 print(f"{domain_short}: median={stats['best_median']:.2f}µs ({stats['best_median_ip']}), best={stats['best_best']:.2f}µs ({stats['best_best_ip']})")
             
             # Write success report
-            success_report = f"\n成功找到錨點小型實例！\n"
+            success_report = f"\nSuccessfully found anchor small instance!\n"
             success_report += f"- Instance ID: {anchor_instance_id}\n"
             success_report += f"- Instance Type: {anchor_instance_type}\n"
             success_report += f"- Placement Group: {placement_group_name} (AZ {BEST_AZ})\n"
@@ -678,13 +680,6 @@ while True:
                 domain_short = hostname.replace(".binance.com", "")
                 success_report += f"  - {domain_short}: median={stats['best_median']:.2f}µs ({stats['best_median_ip']}), best={stats['best_best']:.2f}µs ({stats['best_best_ip']})\n"
             print(success_report)
-            
-            # Append to today's report
-            report_date = start_date
-            report_filename = f"{REPORT_DIR}/report-{report_date}.md"
-            with open(report_filename, "a") as rpt:
-                rpt.write("\n**Anchor instance found, stopping small instance search.**\n")
-                rpt.write(success_report)
             break
         else:
             # Did not meet target - check if it's the champion before terminating
@@ -695,7 +690,7 @@ while True:
                 print(f"Instance {instance_id} did not meet latency target. Terminating and continuing...")
                 try:
                     ec2.terminate_instances(InstanceIds=[instance_id])
-                    print(f"  ✓ Instance termination initiated")
+                    print(f"  [OK] Instance termination initiated")
                 except Exception as e:
                     print(f"[ERROR] Terminating {instance_id} failed: {e}")
                     time.sleep(5)
@@ -711,28 +706,34 @@ while True:
             time.sleep(2)
                 
     except KeyboardInterrupt:
-        print("\n[CTRL‑C] Graceful shutdown requested…")
+        print("\n[CTRL-C] Graceful shutdown requested...")
+        
+        # Helper to check if instance is champion for any domain
+        def is_champion_instance(inst_id):
+            return any(info.get("instance_id") == inst_id for info in domain_champions.values())
+        
         # If current instance is running and not anchor or champion
-        if 'instance_id' in locals() and instance_id and instance_id != anchor_instance_id and instance_id != best_fstream_instance_id:
-            print(f"→ Terminating pending instance {instance_id} …")
-            try:
-                ec2.terminate_instances(InstanceIds=[instance_id])
-            except Exception as e:
-                print(f"  Terminate failed: {e}")
-            # EIP will remain with champion or be available for next instance
-            # Schedule placement group cleanup if exists
-            if 'placement_group_name' in locals() and placement_group_name:
-                print(f"→ Scheduling cleanup of placement group {placement_group_name} …")
-                async_cleanup_placement_group(instance_id, placement_group_name)
-        elif 'instance_id' in locals() and instance_id == best_fstream_instance_id:
-            print(f"→ Preserving fstream-mm champion {instance_id} (EIP will remain associated)")
-        elif 'instance_id' in locals() and instance_id == anchor_instance_id:
-            print(f"→ Preserving anchor instance {instance_id} (EIP will remain associated)")
+        if 'instance_id' in locals() and instance_id:
+            if instance_id == anchor_instance_id:
+                print(f"-> Preserving anchor instance {instance_id} (EIP will remain associated)")
+            elif is_champion_instance(instance_id):
+                champion_domains = [d for d, info in domain_champions.items() if info.get("instance_id") == instance_id]
+                print(f"-> Preserving champion {instance_id} for: {', '.join(champion_domains)}")
+            else:
+                print(f"-> Terminating pending instance {instance_id} ...")
+                try:
+                    ec2.terminate_instances(InstanceIds=[instance_id])
+                except Exception as e:
+                    print(f"  Terminate failed: {e}")
+                # Schedule placement group cleanup if exists
+                if 'placement_group_name' in locals() and placement_group_name:
+                    print(f"-> Scheduling cleanup of placement group {placement_group_name} ...")
+                    async_cleanup_placement_group(instance_id, placement_group_name)
         
         # Wait for all cleanup threads to complete
         active_threads = [t for t in cleanup_threads if t.is_alive()]
         if active_threads:
-            print(f"\n⏳ Waiting for {len(active_threads)} background cleanup task(s) to complete...")
+            print(f"\n[WAIT] Waiting for {len(active_threads)} background cleanup task(s) to complete...")
             print("   This ensures all instances are terminated and placement groups are deleted.")
             print("   (Checking every minute, up to 30 minutes per task)")
             
@@ -745,16 +746,16 @@ while True:
                 active_threads = [t for t in cleanup_threads if t.is_alive()]
                 
                 if len(active_threads) < last_count:
-                    print(f"   ✓ {last_count - len(active_threads)} task(s) completed")
+                    print(f"   [OK] {last_count - len(active_threads)} task(s) completed")
                     last_count = len(active_threads)
                 
                 if active_threads:
                     elapsed = int(time.time() - start_wait)
                     mins = elapsed // 60
                     secs = elapsed % 60
-                    print(f"   ⏳ {len(active_threads)} task(s) still running... (elapsed: {mins}m {secs}s)")
+                    print(f"   [WAIT] {len(active_threads)} task(s) still running... (elapsed: {mins}m {secs}s)")
             
-            print("   ✓ All cleanup tasks completed!")
+            print("   [OK] All cleanup tasks completed!")
         
         break   # Exit while True
 
@@ -764,22 +765,52 @@ if anchor_instance_id:
 else:
     print("Search stopped without finding an anchor instance.")
 
-# Show fstream-mm champion status
-if best_fstream_instance_id:
-    print(f"\n🏆 Current fstream-mm champion: {best_fstream_instance_id} ({best_fstream_instance_type})")
-    print(f"   Best latency: {best_fstream_latency:.2f}µs ({best_fstream_ip})")
-    print(f"   Placement Group: {best_fstream_placement_group}")
-    print(f"   Status: 🛡️  PROTECTED - Will persist after script termination")
-    print(f"")
-    print(f"   📋 Champion Access Instructions:")
-    print(f"   1. To SSH to champion: aws ec2 associate-address --instance-id {best_fstream_instance_id} --allocation-id {EIP_ALLOC_ID}")
-    print(f"   2. Then SSH to EIP address with key: ~/.ssh/dc-machine")
-    print(f"   3. For production: Use IP {best_fstream_ip} for fstream-mm.binance.com connections")
-    print(f"")
-    print(f"   💾 Champion state persisted in: {CHAMPION_STATE_FILE}")
-    print(f"   📜 Champion log available at: {CHAMPION_LOG_FILE}")
+# Show all domain champions
+if domain_champions:
+    print(f"\n[CHAMPION] Current Domain Champions:")
+    
+    # Group champions by instance to show multi-domain champions
+    instance_domains = {}
+    for domain, info in domain_champions.items():
+        instance_id = info.get("instance_id")
+        if instance_id:
+            if instance_id not in instance_domains:
+                instance_domains[instance_id] = {
+                    "domains": [],
+                    "info": info
+                }
+            instance_domains[instance_id]["domains"].append(domain)
+    
+    # Display champions grouped by instance
+    for instance_id, data in instance_domains.items():
+        domains = data["domains"]
+        info = data["info"]
+        
+        print(f"\n   Instance: {instance_id} ({info.get('instance_type', 'N/A')})")
+        print(f"   Placement Group: {info.get('placement_group', 'N/A')}")
+        print(f"   Champions for: {', '.join(domains)}")
+        print(f"   Status: [PROTECTED]  PROTECTED - Will persist after script termination")
+        
+        # Show latency details for each domain this instance champions
+        for domain in domains:
+            domain_info = domain_champions[domain]
+            domain_short = domain.replace(".binance.com", "")
+            print(f"     {domain_short}: median={domain_info.get('median_latency', 'N/A'):.2f}µs, best={domain_info.get('best_latency', 'N/A'):.2f}µs ({domain_info.get('ip', 'N/A')})")
+    
+    print(f"\n   [INFO] Champion Access Instructions:")
+    print(f"   1. To SSH to any champion: aws ec2 associate-address --instance-id <INSTANCE_ID> --allocation-id {EIP_ALLOC_ID}")
+    print(f"   2. Then SSH to EIP address with key: {KEY_PATH}")
+    print(f"   3. For production, use optimal IPs for each service:")
+    
+    # Show optimal IPs for production use
+    for domain, info in domain_champions.items():
+        domain_short = domain.replace(".binance.com", "")
+        print(f"      {domain_short}: {info.get('ip', 'N/A')}")
+    
+    print(f"\n   [SAVE] Champion state persisted in: {CHAMPION_STATE_FILE}")
+    print(f"   [LOG] Champion log available at: {CHAMPION_LOG_FILE}")
 else:
-    print(f"\n⚠️  No fstream-mm champion found during this session.")
+    print(f"\n[WARN]  No champions found during this session.")
 
 # Give background threads a moment to start cleanup before exiting
 if cleanup_threads:
