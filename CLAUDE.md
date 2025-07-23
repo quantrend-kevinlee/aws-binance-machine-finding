@@ -266,6 +266,9 @@ aws ec2 terminate-instances --instance-ids i-abc123
 
 # Delete placement group (after instance terminates)
 aws ec2 delete-placement-group --group-name dc-machine-cpg-1753253935
+
+# Or use the cleanup script to find and remove all orphaned placement groups
+python3 cleanup_orphaned_placement_groups.py
 ```
 
 ### Monitoring
@@ -284,6 +287,7 @@ aws ec2 delete-placement-group --group-name dc-machine-cpg-1753253935
 | `find_small_anchor.py` | Main orchestration - launches instances and manages testing |
 | `binance_latency_test.py` | Latency test executed on each instance |
 | `query_jsonl.py` | Analyze JSONL latency logs |
+| `cleanup_orphaned_placement_groups.py` | Remove orphaned placement groups from terminated instances |
 
 ### Setup Scripts
 
