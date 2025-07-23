@@ -6,10 +6,14 @@ import subprocess
 import json
 import threading
 import sys
+from datetime import timezone, timedelta
 
 # Add the current directory to Python path to import binance_latency_test
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from binance_latency_test import DOMAINS
+
+# Define UTC+8 timezone for Singapore/HK time
+UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 def load_config():
     """Load shared configuration"""
@@ -46,7 +50,8 @@ INSTANCE_TYPES = CONFIG['instance_types']
 REPORT_DIR = CONFIG['report_dir']
 
 # Create dynamic file paths
-CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"
+CSV_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.csv"  # Legacy, will be replaced by JSONL
+JSONL_FILE = f"{REPORT_DIR}/latency_log_{datetime.date.today()}.jsonl"
 CHAMPION_STATE_FILE = f"{REPORT_DIR}/champion_state.json"
 CHAMPION_LOG_FILE = f"{REPORT_DIR}/champion_log_{datetime.date.today()}.txt"
 
@@ -186,7 +191,7 @@ def save_champions_state(current_state, domain_updates):
 
 def log_champion_event(domain, instance_id, instance_type, median_latency, best_latency, ip, placement_group, old_champion=None):
     """Log champion events to dedicated champion log file"""
-    timestamp = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+    timestamp = datetime.datetime.now(UTC_PLUS_8).isoformat(timespec="seconds")
     
     with open(CHAMPION_LOG_FILE, "a") as f:
         f.write(f"\n{timestamp}\n")
@@ -242,7 +247,7 @@ def async_cleanup_placement_group(instance_id, placement_group_name):
     cleanup_threads.append(thread)
     return thread
 
-# CSV file date tracking
+# Log file date tracking
 start_date = datetime.date.today()
 
 instance_index = 0  # For rotating instance type selection
@@ -255,16 +260,11 @@ anchor_instance_type = None
 champion_state = load_champion_state()
 domain_champions = champion_state.get("champions", {})
 
-# If first execution today, write CSV header
-if not os.path.exists(CSV_FILE):
-    with open(CSV_FILE, "w", newline="") as f:
-        csv.writer(f).writerow(
-            ["timestamp", "instance_id", "instance_type", 
-             "best_median_us_fapi-mm", "best_best_us_fapi-mm", "best_median_ip_fapi-mm", "best_best_ip_fapi-mm",
-             "best_median_us_ws-fapi-mm", "best_best_us_ws-fapi-mm", "best_median_ip_ws-fapi-mm", "best_best_ip_ws-fapi-mm",
-             "best_median_us_fstream-mm", "best_best_us_fstream-mm", "best_median_ip_fstream-mm", "best_best_ip_fstream-mm",
-             "passed"]
-        )
+# Create JSONL file if it doesn't exist (no header needed)
+if not os.path.exists(JSONL_FILE):
+    # Just touch the file to create it
+    with open(JSONL_FILE, "w") as f:
+        pass
 
 def run_ssh_command(ip, command, timeout=300):
     """Run command via SSH and return output"""
@@ -299,19 +299,16 @@ def wait_for_ssh(ip, max_attempts=30):
 
 while True:
     try:
-        # Daily check: if date changed, reset CSV file
+        # Daily check: if date changed, reset log files
         today = datetime.date.today()
         if today != start_date:
-            CSV_FILE = f"{REPORT_DIR}/latency_log_{today}.csv"
-            if not os.path.exists(CSV_FILE):
-                with open(CSV_FILE, "w", newline="") as f:
-                    csv.writer(f).writerow(
-                        ["timestamp", "instance_id", "instance_type", 
-                         "best_median_us_fapi-mm", "best_best_us_fapi-mm", "best_median_ip_fapi-mm", "best_best_ip_fapi-mm",
-                         "best_median_us_ws-fapi-mm", "best_best_us_ws-fapi-mm", "best_median_ip_ws-fapi-mm", "best_best_ip_ws-fapi-mm",
-                         "best_median_us_fstream-mm", "best_best_us_fstream-mm", "best_median_ip_fstream-mm", "best_best_ip_fstream-mm",
-                         "passed"]
-                    )
+            JSONL_FILE = f"{REPORT_DIR}/latency_log_{today}.jsonl"
+            CSV_FILE = f"{REPORT_DIR}/latency_log_{today}.csv"  # Keep for backward compatibility
+            CHAMPION_LOG_FILE = f"{REPORT_DIR}/champion_log_{today}.txt"
+            # Create new JSONL file
+            if not os.path.exists(JSONL_FILE):
+                with open(JSONL_FILE, "w") as f:
+                    pass
             # Reset date
             start_date = today
 
@@ -518,7 +515,7 @@ while True:
                     instance_passed = True
 
         # Log results
-        utc_now = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+        utc_now = datetime.datetime.now(UTC_PLUS_8).isoformat(timespec="seconds")
         print(f"\n[{utc_now}] {instance_id}  {instance_type:<9}")
         
         # Show per-domain best results
@@ -528,29 +525,32 @@ while True:
         
         print(f"  Passed: {instance_passed}")
 
-        # Write to CSV
-        with open(CSV_FILE, "a", newline="") as f:
-            # Prepare per-domain data for CSV
-            row_data = [utc_now, instance_id, instance_type]
-            
-            for domain in DOMAINS:
-                if domain in domain_stats:
-                    stats = domain_stats[domain]
-                    row_data.extend([
-                        f"{stats['best_median']:.2f}",
-                        f"{stats['best_best']:.2f}",
-                        stats['best_median_ip'],
-                        stats['best_best_ip']
-                    ])
-                else:
-                    # Domain had errors, fill with empty values
-                    row_data.extend(["", "", "", ""])
-            
-            row_data.append(instance_passed)
-            csv.writer(f).writerow(row_data)
+        # Write to JSONL (JSON Lines format)
+        jsonl_entry = {
+            "timestamp": utc_now,
+            "instance_id": instance_id,
+            "instance_type": instance_type,
+            "passed": instance_passed,
+            "domains": {}
+        }
+        
+        # Add domain-specific data
+        for domain, stats in domain_stats.items():
+            if stats["best_median"] < float("inf"):  # Only add domains with valid data
+                jsonl_entry["domains"][domain] = {
+                    "median": round(stats["best_median"], 2),
+                    "best": round(stats["best_best"], 2),
+                    "median_ip": stats["best_median_ip"],
+                    "best_ip": stats["best_best_ip"]
+                }
+        
+        # Append to JSONL file
+        with open(JSONL_FILE, "a") as f:
+            json.dump(jsonl_entry, f)
+            f.write("\n")
         
         # Write detailed results to text file
-        txt_file = CSV_FILE.replace(".csv", ".txt")
+        txt_file = JSONL_FILE.replace(".jsonl", ".txt")
         with open(txt_file, "a") as f:
             # Write summary line
             f.write(f"[{utc_now}] {instance_id}  {instance_type}\n")
@@ -619,7 +619,7 @@ while True:
                     "best_latency": current_best,
                     "ip": current_ip,
                     "instance_type": instance_type,
-                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+                    "timestamp": datetime.datetime.now(UTC_PLUS_8).isoformat(timespec="seconds")
                 }
                 
                 # Log champion event
