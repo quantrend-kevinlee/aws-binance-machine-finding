@@ -75,20 +75,41 @@ ANY IP address from the Binance domains must meet ONE of these criteria:
 
 ## Script Configuration
 
-Key variables in `find_small_anchor.py`:
+Configuration is centralized in `config.json` (except domains which are defined in `binance_latency_test.py`):
+
+```json
+{
+    "region": "ap-northeast-1",
+    "availability_zone": "ap-northeast-1a",
+    "subnet_id": "subnet-07954f36129e8beb1",
+    "security_group_id": "sg-080dea8b90091be0b",
+    "key_name": "dc-machine",
+    "key_path": "~/.ssh/dc-machine",
+    "eip_allocation_id": "eipalloc-05500f18fa63990b6",
+    "placement_group_base": "dc-machine-cpg",
+    "latency_thresholds": {
+        "median_us": 122,
+        "best_us": 102
+    },
+    "instance_types": [
+        "c8g.medium",
+        "c8g.large",
+        "c8g.xlarge",
+        "c8g.2xlarge",
+        "c8g.4xlarge"
+    ],
+    "report_dir": "./reports"
+}
+```
+
+Domains are defined in `binance_latency_test.py`:
 
 ```python
-REGION = "ap-northeast-1"
-BEST_AZ = "ap-northeast-1a"
-SUBNET_ID = "subnet-07954f36129e8beb1"
-SECURITY_GROUP_ID = "sg-080dea8b90091be0b"
-KEY_NAME = "dc-machine"
-KEY_PATH = os.path.expanduser("~/.ssh/dc-machine")  # Note: no .pem extension in script
-EIP_ALLOC_ID = "eipalloc-05500f18fa63990b6"
-PLACEMENT_GROUP_BASE = "dc-machine-cpg"  # Base name for dynamic placement groups
-MEDIAN_THRESHOLD_US = 122
-BEST_THRESHOLD_US = 102
-INSTANCE_TYPES = ["c8g.24xlarge", "c8g.metal-24xl"]  # Or ["c7i.large", "c8g.large"] for initial search
+DOMAINS = [
+    "fstream-mm.binance.com",
+    "ws-fapi-mm.binance.com",
+    "fapi-mm.binance.com"
+]
 ```
 
 ## Testing Flow
@@ -98,7 +119,7 @@ INSTANCE_TYPES = ["c8g.24xlarge", "c8g.metal-24xl"]  # Or ["c7i.large", "c8g.lar
 3. Wait for instance to reach "running" state
 4. Associate Elastic IP to instance
 5. Wait for SSH availability
-6. Read test script from `binance_latency_test.py` and copy to instance via SSH
+6. Copy `binance_latency_test.py` to instance via SSH
 7. Execute test script and capture JSON output
 8. Parse JSON results from test script
 9. **Champion Evaluation**: Check if instance has better fstream-mm latency than current champion
@@ -148,13 +169,14 @@ timestamp,instance_id,instance_type,best_median_us_fapi-mm,best_best_us_fapi-mm,
 8. ✅ **Synchronous cleanup → Asynchronous cleanup**: Background threads handle termination/deletion
 9. ✅ **Global best tracking → Per-domain tracking**: Track optimal IPs separately for each Binance service
 10. ✅ **Simple pass/fail → Champion system**: Maintain best fstream-mm instance while continuing search
+11. ✅ **Hardcoded config → Centralized config.json**: All configuration now in single JSON file
 
 ### Key Files
 
+-   `config.json`: Centralized configuration file for all scripts
 -   `find_small_anchor.py`: Main script that launches instances and runs tests via SSH
 -   `binance_latency_test.py`: Latency test script executed on each instance (formerly our.py)
--   `setup_aws_resources.py`: Creates all required AWS resources with DNS properly configured
--   `cleanup_aws_resources.py`: Removes all created resources (handles multiple placement groups)
+-   `setup_aws_resources.py`: Creates all required AWS resources with DNS properly configured  
 -   `check_vpc_dns.py`: Verifies and fixes VPC DNS settings
 -   `dc.py`: Reference latency test script provided by client DC (contains bugs, see script comments)
 
@@ -181,9 +203,7 @@ python3 find_small_anchor.py
 
 ### Cleanup
 
-```bash
-python3 cleanup_aws_resources.py
-```
+For cleanup, manually terminate instances and delete placement groups via AWS console or CLI. Champions are protected and must be explicitly terminated if no longer needed.
 
 ## Test Scripts
 
@@ -191,8 +211,9 @@ python3 cleanup_aws_resources.py
 
 The main latency test script executed on each instance:
 
+-   Defines domains to test in DOMAINS array (imported by find_small_anchor.py)
 -   Resolves all IPs for each Binance domain using `host` command
--   Performs 10,000 TCP handshakes per IP
+-   Performs 1,000 TCP handshakes per IP  
 -   Uses nanosecond precision timing
 -   Calculates median and best (minimum) latencies
 -   Returns clean JSON with raw data only
@@ -233,7 +254,7 @@ AWS cluster placement groups place instances on the same physical rack for lowes
 - **Background threads**: Check instance status every minute for up to 30 minutes
 - **Automatic deletion**: Placement groups deleted once instances fully terminate
 - **Progress tracking**: Clear console output shows cleanup status
-- **Cleanup script**: Handles multiple timestamped placement groups
+- **Manual cleanup**: Use AWS console or CLI to clean up resources
 - **Graceful shutdown**: Ctrl+C waits for all background cleanup tasks to complete
 
 ## fstream-mm Champion System
@@ -255,9 +276,9 @@ For HFT applications, maintaining the absolute best fstream-mm connection is cri
 Champions are protected through multiple mechanisms:
 
 - **State File**: Champion details saved to `reports/champion_state.json`
-- **Startup Recovery**: Script loads existing champion state on restart
-- **Cleanup Protection**: `cleanup_aws_resources.py` skips champion instances and placement groups
-- **EIP Management**: EIP can be unbound from champion but instance remains running
+- **Startup Recovery**: Script loads existing champion state on restart and validates instance is still running
+- **Cleanup Protection**: Champions are never automatically terminated
+- **EIP Management**: EIP automatically moves to new instances as needed
 
 ### Champion Selection Criteria
 
@@ -285,12 +306,11 @@ Instance i-def456 is the fstream-mm champion - keeping it running!
 Dedicated champion events are logged to `champion_log_YYYY-MM-DD.txt`:
 
 ```
-2025-07-22T08:45:23+00:00 - INITIAL_CHAMPION
+2025-07-22T08:45:23+00:00
   New Champion: i-def456 (c8g.large)
-  Best Latency: 125.30µs
-  Optimal IP: 13.114.195.190
+  fstream-mm Best Latency: 125.30µs
+  fstream-mm Optimal IP: 13.114.195.190
   Placement Group: dc-machine-cpg-1753169400
-  Status: PROTECTED - Will persist after script termination
 --------------------------------------------------------------------------------
 ```
 

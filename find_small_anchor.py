@@ -5,6 +5,11 @@ import csv
 import subprocess
 import json
 import threading
+import sys
+
+# Add the current directory to Python path to import binance_latency_test
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from binance_latency_test import DOMAINS
 
 def load_config():
     """Load shared configuration"""
@@ -443,7 +448,7 @@ while True:
         # Create and run the latency test script
         print("Running latency test via SSH...")
         
-        # First, create the test script on the instance
+        # Create the test script on the instance
         script_content = LATENCY_TEST_SCRIPT.replace("'", "'\"'\"'")  # Escape single quotes
         create_script_cmd = f"echo '{script_content}' > /tmp/latency_test.py"
         stdout, stderr, code = run_ssh_command(eip_address, create_script_cmd)
@@ -545,10 +550,9 @@ while True:
         # Write to CSV
         with open(CSV_FILE, "a", newline="") as f:
             # Prepare per-domain data for CSV
-            domains = CONFIG['domains']
             row_data = [utc_now, instance_id, instance_type]
             
-            for domain in domains:
+            for domain in DOMAINS:
                 if domain in domain_stats:
                     stats = domain_stats[domain]
                     row_data.extend([
@@ -606,7 +610,7 @@ while True:
         daily_counts += 1
 
         # Check for fstream-mm champion
-        fstream_domain = CONFIG['domains'][2]  # fstream-mm.binance.com
+        fstream_domain = DOMAINS[0]  # fstream-mm.binance.com
         current_fstream_latency = float("inf")
         current_fstream_ip = None
         
