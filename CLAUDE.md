@@ -351,6 +351,13 @@ Located in `tool_scripts/` directory:
    - Terminated instances removed from champion state
    - Check AWS console for instance status
 
+5. **Latency Test Timeouts**
+   - With more domains, tests take longer (6 domains × ~30s each = 180s minimum)
+   - Progress is now displayed in real-time on your terminal
+   - Shows DNS resolution, test progress, and results for each IP
+   - If timeout occurs, check the last displayed progress to identify slow domains
+   - Partial results may still be available even if timeout occurs
+
 ### Best Practices
 
 - Run script during off-peak hours for consistent results
@@ -370,4 +377,5 @@ Located in `tool_scripts/` directory:
 5. **JSONL Format**: Flexible schema for future domain changes
 6. **UTC+8 Timezone**: Aligns with APAC trading hours
 7. **Asynchronous Cleanup**: Non-blocking resource management
-8. **Dynamic Test Timeout**: Scales with number of domains (100s per domain, minimum 300s)
+8. **Dynamic Test Timeout**: Scales with number of domains (30s per domain, minimum 180s)
+9. **Real-time Progress**: Displays remote test progress on local terminal for debugging

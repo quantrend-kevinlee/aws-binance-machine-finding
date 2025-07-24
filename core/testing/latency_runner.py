@@ -56,16 +56,33 @@ class LatencyTestRunner:
         if not self.ssh_client.deploy_script(eip_address, self._test_script, "/tmp/latency_test.py"):
             return None
         
-        # Run the test script
+        # Run the test script with progress display
         print(f"Executing latency tests (timeout: {self.test_timeout}s for {self.num_domains} domains)...")
-        stdout, stderr, code = self.ssh_client.run_command(
+        print(f"Progress will be displayed below:")
+        print("-" * 60)
+        
+        stdout, stderr, code = self.ssh_client.run_command_with_progress(
             eip_address, 
             "python3 /tmp/latency_test.py", 
             timeout=self.test_timeout
         )
         
+        print("-" * 60)
+        
         if code != 0:
-            print(f"[ERROR] Test script failed: {stderr}")
+            print(f"\n[ERROR] Test script failed with return code: {code}")
+            if stderr:
+                print(f"[ERROR] Last stderr output:\n{stderr}")
+            
+            # Try to parse partial results from stdout if available
+            if stdout:
+                try:
+                    results = json.loads(stdout)
+                    print("[INFO] Partial results were obtained despite the error")
+                    return results
+                except json.JSONDecodeError:
+                    print("[ERROR] Could not parse partial results")
+            
             return None
         
         # Parse JSON results
