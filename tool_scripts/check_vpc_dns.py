@@ -10,11 +10,13 @@ import os
 def load_config():
     """Load shared configuration"""
     try:
-        with open('config.json', 'r') as f:
+        # Look for config.json in the parent directory
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+        with open(config_path, 'r') as f:
             return json.load(f)
     except FileNotFoundError:
         print("❌ Configuration file 'config.json' not found")
-        print("   Make sure config.json exists in the current directory")
+        print("   Make sure config.json exists in the project root directory")
         return None
     except Exception as e:
         print(f"❌ Error loading config: {e}")

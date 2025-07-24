@@ -20,31 +20,37 @@ An instance passes if ANY IP from the Binance domains meets:
 
 ```bash
 # Initial AWS setup (one-time)
-python3 setup_aws_resources.py
+python3 tool_scripts/setup_aws_resources.py
 
 # Start finding low-latency instances
-python3 find_small_anchor.py
+python3 find_instance.py
 
 # Query results
-python3 query_jsonl.py all
+python3 tool_scripts/query_jsonl.py all
 ```
 
 ## Architecture
 
 ### Core Components
 
-1. **find_small_anchor.py** - Main orchestration script
-   - Launches EC2 instances with unique placement groups
-   - Manages SSH-based latency testing
-   - Tracks multi-domain champions
-   - Handles asynchronous resource cleanup
+1. **find_instance.py** - Main entry point
+   - Simple wrapper that starts the orchestration process
+   - Loads configuration and initializes the system
 
-2. **binance_latency_test.py** - Latency measurement script
+2. **core/** - Modular architecture for maintainability
+   - **config.py**: Configuration management with validation
+   - **orchestrator.py**: Main loop coordination
+   - **aws/**: EC2, EIP, and placement group management
+   - **champion/**: Champion selection and persistence
+   - **testing/**: SSH and latency test execution
+   - **logging/**: JSONL and text format logging
+
+3. **binance_latency_test.py** - Latency measurement script
    - Runs on each EC2 instance
    - Tests TCP handshake latency to Binance endpoints
    - Returns JSON results for analysis
 
-3. **Multi-Domain Champion System**
+4. **Multi-Domain Champion System**
    - Tracks best instance per Binance service domain
    - Supports one instance championing multiple domains
    - Persists champion state across script restarts
@@ -248,14 +254,28 @@ AWS cluster placement groups provide lowest latency within a rack, but:
 ### SSH Access to Champions
 
 ```bash
-# Associate EIP to champion
+# Method 1: Using the convenient ssh_instance.py script
+python3 tool_scripts/ssh_instance.py i-03fa7ce9d925be452
+
+# Method 2: Using bind_eip.py then SSH manually
+python3 tool_scripts/bind_eip.py i-03fa7ce9d925be452
+ssh -i ~/.ssh/dc-machine -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@<EIP_ADDRESS>
+
+# Method 3: Using AWS CLI directly
 aws ec2 associate-address \
   --instance-id i-03fa7ce9d925be452 \
   --allocation-id eipalloc-05500f18fa63990b6
-
-# SSH to instance
 ssh -i ~/.ssh/dc-machine ec2-user@<EIP_ADDRESS>
 ```
+
+#### SSH Without Known Hosts Issues
+
+The scripts use these SSH options to avoid host key verification issues:
+- `-o StrictHostKeyChecking=no` - Don't check host keys
+- `-o UserKnownHostsFile=/dev/null` - Don't save host keys
+- `-o ConnectTimeout=10` - Timeout after 10 seconds
+
+This is useful when the same EIP is reused across different instances.
 
 ### Manual Cleanup
 
@@ -268,7 +288,7 @@ aws ec2 terminate-instances --instance-ids i-abc123
 aws ec2 delete-placement-group --group-name dc-machine-cpg-1753253935
 
 # Or use the cleanup script to find and remove all orphaned placement groups
-python3 cleanup_orphaned_placement_groups.py
+python3 tool_scripts/cleanup_orphaned_placement_groups.py
 ```
 
 ### Monitoring
@@ -280,21 +300,25 @@ python3 cleanup_orphaned_placement_groups.py
 
 ## Scripts Reference
 
-### Core Scripts
+### Main Script
 
 | Script | Purpose |
 |--------|---------|
-| `find_small_anchor.py` | Main orchestration - launches instances and manages testing |
+| `find_instance.py` | Main entry point - orchestrates the instance finding process |
 | `binance_latency_test.py` | Latency test executed on each instance |
-| `query_jsonl.py` | Analyze JSONL latency logs |
-| `cleanup_orphaned_placement_groups.py` | Remove orphaned placement groups from terminated instances |
 
-### Setup Scripts
+### Tool Scripts
+
+Located in `tool_scripts/` directory:
 
 | Script | Purpose |
 |--------|---------|
 | `setup_aws_resources.py` | Create VPC, subnets, security groups, etc. |
 | `check_vpc_dns.py` | Verify/fix VPC DNS settings |
+| `query_jsonl.py` | Analyze JSONL latency logs |
+| `cleanup_orphaned_placement_groups.py` | Remove orphaned placement groups from terminated instances |
+| `bind_eip.py` | Bind Elastic IP to an instance by ID |
+| `ssh_instance.py` | SSH into instance by ID (auto-binds EIP) |
 
 ### Configuration Files
 
@@ -310,7 +334,7 @@ python3 cleanup_orphaned_placement_groups.py
 ### Common Issues
 
 1. **DNS Resolution Fails**
-   - Run `python3 check_vpc_dns.py` to verify VPC DNS settings
+   - Run `python3 tool_scripts/check_vpc_dns.py` to verify VPC DNS settings
    - Ensure both enableDnsSupport and enableDnsHostnames are true
 
 2. **SSH Connection Timeout**
@@ -339,9 +363,11 @@ python3 cleanup_orphaned_placement_groups.py
 
 ### Key Design Decisions
 
-1. **SSH-based Testing**: More reliable than EC2 console output
-2. **Dynamic Placement Groups**: Ensures testing across all racks
-3. **Median Latency**: More stable metric than minimum for champions
-4. **JSONL Format**: Flexible schema for future domain changes
-5. **UTC+8 Timezone**: Aligns with APAC trading hours
-6. **Asynchronous Cleanup**: Non-blocking resource management
+1. **Modular Architecture**: Separated concerns for maintainability and testing
+2. **SSH-based Testing**: More reliable than EC2 console output
+3. **Dynamic Placement Groups**: Ensures testing across all racks
+4. **Median Latency**: More stable metric than minimum for champions
+5. **JSONL Format**: Flexible schema for future domain changes
+6. **UTC+8 Timezone**: Aligns with APAC trading hours
+7. **Asynchronous Cleanup**: Non-blocking resource management
+8. **Dynamic Test Timeout**: Scales with number of domains (100s per domain, minimum 300s)

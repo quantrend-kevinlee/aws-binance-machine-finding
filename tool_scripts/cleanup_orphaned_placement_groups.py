@@ -15,7 +15,10 @@ UTC_PLUS_8 = timezone(timedelta(hours=8))
 def load_config():
     """Load configuration from config.json"""
     try:
-        with open("config.json", "r") as f:
+        # Look for config.json in the parent directory
+        import os
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+        with open(config_path, "r") as f:
             return json.load(f)
     except FileNotFoundError:
         print("Error: config.json not found")

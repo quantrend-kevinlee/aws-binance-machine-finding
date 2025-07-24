@@ -5,9 +5,9 @@ DOMAINS = [
     "fstream-mm.binance.com", # futures: xstream, auth stream
     "ws-fapi-mm.binance.com", # futures: wsapi
     "fapi-mm.binance.com", # futures: restful api
-    # "stream.binance.com", # spot: xstream, auth stream
-    # "ws-api.binance.com", # spot: wsapi
-    # "api.binance.com", # spot: restful api
+    "stream.binance.com", # spot: xstream, auth stream
+    "ws-api.binance.com", # spot: wsapi
+    "api.binance.com", # spot: restful api
 ]
 
 ATTEMPTS = 1000

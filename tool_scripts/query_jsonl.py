@@ -94,7 +94,10 @@ def main():
     
     if command == "all":
         # Analyze all JSONL files
-        files = sorted(glob("reports/latency_log_*.jsonl"))
+        import os
+        reports_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports")
+        pattern = os.path.join(reports_dir, "latency_log_*.jsonl")
+        files = sorted(glob(pattern))
         all_records = []
         for file in files:
             print(f"\nLoading {file}...")
