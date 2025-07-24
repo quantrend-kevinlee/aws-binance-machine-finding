@@ -10,22 +10,23 @@ from .ssh_client import SSHClient
 class LatencyTestRunner:
     """Runs latency tests on EC2 instances."""
     
-    # Base timeout per domain (30 seconds per domain)
-    TIMEOUT_PER_DOMAIN = 30
-    MIN_TIMEOUT = 180  # Minimum timeout even for small domain counts
-    
-    def __init__(self, ssh_client: SSHClient, num_domains: int = 3):
+    def __init__(self, ssh_client: SSHClient, num_domains: int = 3, 
+                 timeout_per_domain: int = 30, min_timeout: int = 180):
         """Initialize latency test runner.
         
         Args:
             ssh_client: SSH client instance
             num_domains: Number of domains to test (for timeout calculation)
+            timeout_per_domain: Timeout seconds per domain
+            min_timeout: Minimum timeout regardless of domain count
         """
         self.ssh_client = ssh_client
         self._test_script = None
         self.num_domains = num_domains
-        # Calculate timeout based on domain count, with minimum of 300 seconds
-        self.test_timeout = max(self.MIN_TIMEOUT, self.TIMEOUT_PER_DOMAIN * num_domains)
+        self.timeout_per_domain = timeout_per_domain
+        self.min_timeout = min_timeout
+        # Calculate timeout based on domain count, with configured minimum
+        self.test_timeout = max(self.min_timeout, self.timeout_per_domain * num_domains)
     
     def load_test_script(self, script_path: str = "binance_latency_test.py") -> None:
         """Load the latency test script.
@@ -58,6 +59,7 @@ class LatencyTestRunner:
         
         # Run the test script with progress display
         print(f"Executing latency tests (timeout: {self.test_timeout}s for {self.num_domains} domains)...")
+        print(f"Timeout configuration: {self.timeout_per_domain}s per domain, {self.min_timeout}s minimum")
         print(f"Progress will be displayed below:")
         print("-" * 60)
         

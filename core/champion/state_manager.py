@@ -161,3 +161,49 @@ class ChampionStateManager:
             domain for domain, info in self.state.get('champions', {}).items()
             if info.get('instance_id') == instance_id
         ]
+    
+    def generate_champion_name(self, domains: List[str]) -> str:
+        """Generate a name for a champion instance based on domains it champions.
+        
+        Args:
+            domains: List of domain names this instance champions
+            
+        Returns:
+            Generated name like "DC-Champ-fstream-ws-fapi"
+        """
+        if not domains:
+            return "DC-Champ"
+        
+        # Extract short names from domains
+        short_names = []
+        for domain in sorted(domains):  # Sort for consistent naming
+            if "fstream" in domain:
+                short_names.append("fstream")
+            elif "ws-fapi" in domain:
+                short_names.append("ws-fapi")
+            elif "fapi" in domain and "ws" not in domain:
+                short_names.append("fapi")
+            elif "stream.binance" in domain:
+                short_names.append("stream")
+            elif "ws-api" in domain:
+                short_names.append("ws-api")
+            elif "api.binance" in domain:
+                short_names.append("api")
+            else:
+                # Fallback: use first part of domain
+                short_names.append(domain.split('.')[0])
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_names = []
+        for name in short_names:
+            if name not in seen:
+                seen.add(name)
+                unique_names.append(name)
+        
+        # Join with hyphens, limit length
+        name_suffix = "-".join(unique_names[:3])  # Limit to 3 domains
+        if len(domains) > 3:
+            name_suffix += f"-{len(domains)-3}more"
+        
+        return f"DC-Champ-{name_suffix}"

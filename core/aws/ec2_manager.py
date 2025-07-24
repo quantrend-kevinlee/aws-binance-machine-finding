@@ -142,3 +142,110 @@ class EC2Manager:
         """Get user data script."""
         from ..constants import USER_DATA_SCRIPT
         return USER_DATA_SCRIPT
+    
+    def get_instance_status(self, instance_id: str) -> Dict[str, Any]:
+        """Get instance status check information.
+        
+        Args:
+            instance_id: EC2 instance ID
+            
+        Returns:
+            Dict with status check information
+        """
+        try:
+            response = self.client.describe_instance_status(
+                InstanceIds=[instance_id],
+                IncludeAllInstances=True
+            )
+            
+            if response['InstanceStatuses']:
+                status = response['InstanceStatuses'][0]
+                return {
+                    'instance_state': status['InstanceState']['Name'],
+                    'system_status': status['SystemStatus']['Status'],
+                    'instance_status': status['InstanceStatus']['Status'],
+                    'system_details': status['SystemStatus'].get('Details', []),
+                    'instance_details': status['InstanceStatus'].get('Details', [])
+                }
+            
+            return {'instance_state': 'unknown', 'system_status': 'unknown', 'instance_status': 'unknown'}
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to get instance status: {e}")
+            return {'instance_state': 'error', 'system_status': 'error', 'instance_status': 'error'}
+    
+    def wait_for_status_checks(self, instance_id: str, max_wait_minutes: int = 10) -> bool:
+        """Wait for instance status checks to pass.
+        
+        Args:
+            instance_id: EC2 instance ID
+            max_wait_minutes: Maximum time to wait in minutes
+            
+        Returns:
+            True if status checks pass, False on timeout
+        """
+        print(f"Waiting for EC2 status checks to pass (up to {max_wait_minutes} minutes)...")
+        start_time = time.time()
+        max_wait_seconds = max_wait_minutes * 60
+        
+        while time.time() - start_time < max_wait_seconds:
+            status = self.get_instance_status(instance_id)
+            
+            if status['system_status'] == 'ok' and status['instance_status'] == 'ok':
+                elapsed = int(time.time() - start_time)
+                print(f"Status checks passed after {elapsed} seconds")
+                return True
+            
+            # Show progress
+            elapsed = int(time.time() - start_time)
+            print(f"  [{elapsed}s] System: {status['system_status']}, Instance: {status['instance_status']}")
+            
+            # Wait 15 seconds before next check (AWS recommended interval)
+            time.sleep(15)
+        
+        print(f"[WARN] Status checks did not pass within {max_wait_minutes} minutes")
+        return False
+    
+    def check_instance_status(self, instance_id: str) -> Tuple[bool, Dict[str, Any]]:
+        """Check instance status without waiting.
+        
+        Args:
+            instance_id: EC2 instance ID
+            
+        Returns:
+            Tuple of (all_checks_passed, status_dict)
+        """
+        status = self.get_instance_status(instance_id)
+        all_passed = status['system_status'] == 'ok' and status['instance_status'] == 'ok'
+        
+        # Log current status
+        print(f"Current status checks - System: {status['system_status']}, Instance: {status['instance_status']}")
+        
+        if not all_passed and status['system_status'] != 'error':
+            if status['system_status'] == 'initializing' or status['instance_status'] == 'initializing':
+                print("  Status checks still initializing (this is normal for new instances)")
+            else:
+                print(f"  Status checks not fully passed yet")
+        
+        return all_passed, status
+    
+    def update_instance_name(self, instance_id: str, new_name: str) -> bool:
+        """Update the Name tag of an instance.
+        
+        Args:
+            instance_id: EC2 instance ID
+            new_name: New name for the instance
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.client.create_tags(
+                Resources=[instance_id],
+                Tags=[{'Key': 'Name', 'Value': new_name}]
+            )
+            print(f"Updated instance {instance_id} name to: {new_name}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to update instance name: {e}")
+            return False

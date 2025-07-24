@@ -3,7 +3,7 @@
 import json
 import os
 import sys
-from typing import Dict, List, Any
+from typing import Dict, List
 
 
 class Config:
@@ -109,6 +109,27 @@ class Config:
         """Directory for report files."""
         return self._data['report_dir']
     
-    def get_raw_data(self) -> Dict[str, Any]:
-        """Get raw configuration data."""
-        return self._data.copy()
+    @property
+    def network_init_wait_seconds(self) -> int:
+        """Seconds to wait for network initialization after SSH is ready."""
+        return self._data.get('network_init_wait_seconds', 30)  # Default to 30 seconds
+    
+    @property
+    def timeout_per_domain_seconds(self) -> int:
+        """Timeout per domain for latency testing."""
+        return self._data.get('timeout_per_domain_seconds', 30)  # Default to 30 seconds
+    
+    @property
+    def min_timeout_seconds(self) -> int:
+        """Minimum timeout for latency testing regardless of domain count."""
+        return self._data.get('min_timeout_seconds', 180)  # Default to 180 seconds
+    
+    @property
+    def wait_for_status_checks(self) -> bool:
+        """Whether to wait for EC2 status checks to pass before testing."""
+        return self._data.get('wait_for_status_checks', False)  # Default to False for speed
+    
+    @property
+    def check_status_before_test(self) -> bool:
+        """Whether to check (but not wait for) status checks before testing."""
+        return self._data.get('check_status_before_test', True)  # Default to True for visibility

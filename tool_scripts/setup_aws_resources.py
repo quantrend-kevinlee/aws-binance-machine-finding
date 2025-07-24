@@ -6,7 +6,6 @@ Creates all required AWS resources and outputs configuration
 import boto3
 import os
 import sys
-import time
 import json
 from datetime import datetime
 

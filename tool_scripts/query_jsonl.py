@@ -5,7 +5,6 @@ Query and analyze JSONL latency logs
 import json
 import sys
 from glob import glob
-from datetime import datetime
 from collections import defaultdict
 
 def load_jsonl(file_path):

@@ -1,4 +1,4 @@
-import socket, subprocess, statistics, time, sys, json, os
+import socket, subprocess, statistics, time, sys, json
 from datetime import datetime
 
 # Domain configuration
@@ -40,14 +40,8 @@ def resolve_ips(hostname):
 
 def test_latency(ip, hostname):
     latencies = []
-    start_time = time.time()
     
-    # Show progress every 200 attempts
     for i in range(ATTEMPTS):
-        if i > 0 and i % 200 == 0:
-            elapsed = time.time() - start_time
-            log_progress(f"    Progress: {i}/{ATTEMPTS} attempts, {len(latencies)} successful, {elapsed:.1f}s elapsed")
-        
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(TIMEOUT)
@@ -58,9 +52,6 @@ def test_latency(ip, hostname):
             latencies.append((t1 - t0) / 1000)  # ns to microseconds
         except socket.error:
             continue
-    
-    elapsed = time.time() - start_time
-    log_progress(f"    Completed: {len(latencies)}/{ATTEMPTS} successful connections in {elapsed:.1f}s")
     
     if not latencies:
         log_progress(f"    ERROR: No successful connections to {ip}")

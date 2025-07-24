@@ -18,5 +18,10 @@
         "c8g.2xlarge",
         "c8g.4xlarge"
     ],
-    "report_dir": "./reports"
+    "report_dir": "./reports",
+    "network_init_wait_seconds": 60,
+    "timeout_per_domain_seconds": 30,
+    "min_timeout_seconds": 180,
+    "wait_for_status_checks": false,
+    "check_status_before_test": true
 }

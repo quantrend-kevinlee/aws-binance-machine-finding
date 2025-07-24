@@ -90,7 +90,12 @@ python3 tool_scripts/query_jsonl.py all
         "c8g.2xlarge",
         "c8g.4xlarge"
     ],
-    "report_dir": "./reports"
+    "report_dir": "./reports",
+    "network_init_wait_seconds": 30,  // Wait time after SSH ready before testing
+    "timeout_per_domain_seconds": 30,  // Timeout per domain for latency tests
+    "min_timeout_seconds": 180,        // Minimum timeout regardless of domain count
+    "wait_for_status_checks": false,   // Wait for EC2 status checks (adds 3-5 min)
+    "check_status_before_test": true   // Check (but don't wait for) status checks
 }
 ```
 
@@ -141,6 +146,23 @@ The champion system maintains the lowest-latency instance for each Binance servi
 - **Median Latency Criteria**: Champions selected by lowest median latency
 - **Protection**: Champions never auto-terminate
 - **Persistence**: State survives script restarts
+- **Auto-Naming**: Champion instances automatically renamed to reflect their status
+
+### Instance Naming Convention
+
+Instances are automatically renamed based on their status:
+
+- **Search instances**: `{timestamp}-DC-Search` (initial name)
+- **Champion instances**: `DC-Champ-{domain1}-{domain2}...` (e.g., `DC-Champ-fstream-ws-fapi`)
+- **Anchor instances**: `DC-ANCHOR` or `DC-Champ-{domains}-ANCHOR` if also a champion
+
+Domain abbreviations used in names:
+- `fstream-mm.binance.com` → `fstream`
+- `ws-fapi-mm.binance.com` → `ws-fapi`
+- `fapi-mm.binance.com` → `fapi`
+- `stream.binance.com` → `stream`
+- `ws-api.binance.com` → `ws-api`
+- `api.binance.com` → `api`
 
 ### Champion State Example
 
@@ -251,6 +273,40 @@ AWS cluster placement groups provide lowest latency within a rack, but:
 
 ## Operational Notes
 
+### Network Initialization and Latency Testing
+
+The system uses a **hybrid approach** to balance speed and accuracy:
+
+#### 1. EC2 Status Checks (Optional)
+- **check_status_before_test** (default: true): Checks current status without waiting
+- **wait_for_status_checks** (default: false): Waits for status checks to pass (adds 3-5 minutes)
+
+Status checks verify:
+- **System Status**: Hardware/infrastructure health
+- **Instance Status**: OS responds to ARP requests
+- Typically take 3.5-4.5 minutes to complete
+
+#### 2. Network Initialization Wait
+After SSH is ready, the system waits (configurable via network_init_wait_seconds) to ensure:
+
+1. **CPU Load Settles**: Boot processes complete and stop consuming CPU cycles
+2. **Network Stack Optimizes**: Kernel network parameters fully load
+3. **ARP Cache Populates**: Initial ARP resolutions complete
+4. **Routing Tables Converge**: Network paths optimize
+
+Without this wait, latency measurements can be inaccurate due to:
+- CPU contention from initialization tasks affecting TCP handshake timing
+- Empty ARP cache causing first connections to include ARP resolution time
+- Network buffers and kernel parameters not yet optimized
+- EC2's known ARP cache inheritance issue (requiring `gc_thresh1=0`)
+
+The system monitors CPU load during this wait period and displays progress.
+
+#### Recommended Settings
+- **Fast iteration** (default): `wait_for_status_checks: false, network_init_wait_seconds: 30`
+- **Maximum safety**: `wait_for_status_checks: true, network_init_wait_seconds: 30`
+- **Fastest testing**: `wait_for_status_checks: false, network_init_wait_seconds: 0` (not recommended)
+
 ### SSH Access to Champions
 
 ```bash
@@ -352,7 +408,8 @@ Located in `tool_scripts/` directory:
    - Check AWS console for instance status
 
 5. **Latency Test Timeouts**
-   - With more domains, tests take longer (6 domains × ~30s each = 180s minimum)
+   - Test timeout scales with domain count (configurable via timeout_per_domain_seconds)
+   - Minimum timeout ensures tests complete (configurable via min_timeout_seconds)
    - Progress is now displayed in real-time on your terminal
    - Shows DNS resolution, test progress, and results for each IP
    - If timeout occurs, check the last displayed progress to identify slow domains
@@ -377,5 +434,7 @@ Located in `tool_scripts/` directory:
 5. **JSONL Format**: Flexible schema for future domain changes
 6. **UTC+8 Timezone**: Aligns with APAC trading hours
 7. **Asynchronous Cleanup**: Non-blocking resource management
-8. **Dynamic Test Timeout**: Scales with number of domains (30s per domain, minimum 180s)
+8. **Dynamic Test Timeout**: Scales with number of domains (configurable via timeout_per_domain_seconds and min_timeout_seconds)
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
+10. **Network Initialization Wait**: Configurable wait after SSH ensures accurate latency measurements by allowing CPU, network stack, and ARP cache to stabilize
+11. **Auto-Naming**: Instances automatically renamed to reflect their champion/anchor status for easy identification

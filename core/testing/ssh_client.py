@@ -172,6 +172,53 @@ class SSHClient:
         
         return False
     
+    def wait_for_network_ready(self, ip: str, wait_time: int = 30) -> bool:
+        """Wait for network stack to be fully initialized after SSH is ready.
+        
+        This helps ensure accurate latency measurements by waiting for:
+        - CPU load from boot processes to settle
+        - Network stack optimization to complete
+        - ARP cache to populate
+        - Kernel network parameters to load
+        
+        Args:
+            ip: Target IP address
+            wait_time: Seconds to wait after SSH is ready (configurable)
+            
+        Returns:
+            True if successful
+        """
+        print(f"Waiting {wait_time}s for network stack to fully initialize...")
+        
+        # Check CPU load is settling
+        for i in range(wait_time // 5):
+            stdout, stderr, code = self.run_command(
+                ip, 
+                "uptime | awk '{print $(NF-2)}' | sed 's/,//'", 
+                timeout=5
+            )
+            if code == 0 and stdout.strip():
+                try:
+                    load = float(stdout.strip())
+                    print(f"  [{(i+1)*5}s] Current 1-min load average: {load:.2f}")
+                except ValueError:
+                    pass
+            time.sleep(5)
+        
+        # Final check - ensure basic network operations work
+        stdout, stderr, code = self.run_command(
+            ip,
+            "ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1 && echo 'Network ready'",
+            timeout=5
+        )
+        
+        if code == 0 and "Network ready" in stdout:
+            print("Network stack initialization complete!")
+            return True
+        
+        print("Warning: Network may not be fully ready")
+        return True  # Continue anyway
+    
     def deploy_script(self, ip: str, script_content: str, script_path: str) -> bool:
         """Deploy a script to remote instance.
         

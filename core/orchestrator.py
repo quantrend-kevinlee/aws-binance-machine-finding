@@ -4,7 +4,7 @@ import sys
 import time
 import datetime
 import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 # Add parent directory to path to import binance_latency_test
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,8 +50,14 @@ class Orchestrator:
         
         # Initialize testing components
         self.ssh_client = SSHClient(config.key_path)
-        # Pass the number of domains for dynamic timeout calculation
-        self.latency_runner = LatencyTestRunner(self.ssh_client, num_domains=len(DOMAINS))
+        # Pass the number of domains and timeout configuration
+        # Timeouts are configurable via timeout_per_domain_seconds and min_timeout_seconds
+        self.latency_runner = LatencyTestRunner(
+            self.ssh_client, 
+            num_domains=len(DOMAINS),
+            timeout_per_domain=config.timeout_per_domain_seconds,
+            min_timeout=config.min_timeout_seconds
+        )
         self.latency_runner.load_test_script()
         self.result_processor = ResultProcessor(
             config.median_threshold_us, config.best_threshold_us
@@ -180,6 +186,28 @@ class Orchestrator:
             time.sleep(2)
             return False
         
+        # Check or wait for EC2 status checks if configured
+        if self.config.check_status_before_test or self.config.wait_for_status_checks:
+            if self.config.wait_for_status_checks:
+                # Wait for status checks to pass (blocking)
+                if not self.ec2_manager.wait_for_status_checks(instance_id):
+                    print("[WARN] Proceeding despite status checks not passing")
+            else:
+                # Just check status without waiting (non-blocking)
+                self.ec2_manager.check_instance_status(instance_id)
+        
+        # Wait for network stack to fully initialize
+        # This ensures accurate latency measurements by waiting for:
+        # - CPU load from boot processes to settle
+        # - Network stack optimization to complete
+        # - ARP cache to populate
+        # - Kernel network parameters to load
+        # Wait time is configurable via network_init_wait_seconds in config.json
+        self.ssh_client.wait_for_network_ready(
+            eip_address, 
+            wait_time=self.config.network_init_wait_seconds
+        )
+        
         # Run latency test
         results = self.latency_runner.run_latency_test(eip_address)
         if not results:
@@ -250,6 +278,13 @@ class Orchestrator:
                     info["ip"], placement_group_name, old_champion
                 )
             
+            # Update instance name for the new champion
+            # Get all domains this instance now champions
+            instance_domains = self.champion_state_manager.get_instance_domains(instance_id)
+            if instance_domains:
+                new_name = self.champion_state_manager.generate_champion_name(instance_domains)
+                self.ec2_manager.update_instance_name(instance_id, new_name)
+            
             # Handle replaced instances
             all_champions = self.champion_state_manager.get_champions()
             replaceable = self.champion_evaluator.get_replaceable_instances(
@@ -265,12 +300,34 @@ class Orchestrator:
                         if pg:
                             self.pg_manager.schedule_async_cleanup(old_instance_id, pg)
                             break
+            
+            # Update names for any instances that lost champion status but still champion other domains
+            for old_instance_id in replaced_instances:
+                if old_instance_id not in replaceable:
+                    # This instance still champions some domains
+                    remaining_domains = self.champion_state_manager.get_instance_domains(old_instance_id)
+                    if remaining_domains:
+                        new_name = self.champion_state_manager.generate_champion_name(remaining_domains)
+                        self.ec2_manager.update_instance_name(old_instance_id, new_name)
     
     def _handle_anchor_instance(self, instance_id: str, instance_type: str,
                                placement_group_name: str, domain_stats: Dict[str, Any]) -> None:
         """Handle finding an anchor instance."""
         self.anchor_instance_id = instance_id
         self.anchor_instance_type = instance_type
+        
+        # Update instance name to reflect it's an anchor
+        # Check if it's also a champion
+        champion_domains = self.champion_state_manager.get_instance_domains(instance_id)
+        if champion_domains:
+            # It's both anchor and champion
+            base_name = self.champion_state_manager.generate_champion_name(champion_domains)
+            new_name = f"{base_name}-ANCHOR"
+        else:
+            # Just an anchor
+            new_name = "DC-ANCHOR"
+        
+        self.ec2_manager.update_instance_name(instance_id, new_name)
         
         print(self.result_processor.format_anchor_report(
             instance_id, instance_type, placement_group_name,
