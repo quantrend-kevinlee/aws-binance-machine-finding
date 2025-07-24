@@ -14,11 +14,10 @@ import time
 
 def load_config():
     """Load configuration from config.json"""
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
     try:
-        # Look for config.json in the parent directory
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
         with open(config_path, "r") as f:
-            return json.load(f)
+            return json.load(f), config_path
     except FileNotFoundError:
         print("Error: config.json not found in project root")
         sys.exit(1)
@@ -36,7 +35,7 @@ def main():
     instance_id = sys.argv[1]
     
     # Load configuration
-    config = load_config()
+    config, config_path = load_config()
     region = config['region']
     eip_allocation_id = config['eip_allocation_id']
     key_path = os.path.expanduser(config['key_path'])

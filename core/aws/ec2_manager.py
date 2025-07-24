@@ -32,11 +32,15 @@ class EC2Manager:
         Returns:
             Tuple of (instance_id, error_message)
         """
-        # Select AMI based on instance type
-        if instance_type.startswith("c7"):
-            image_id = "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-        else:
+        # Select AMI based on instance type architecture
+        # ARM-based instances: c6g, c7g, c8g (Graviton)
+        # x86-based instances: c6i, c7i, c6a, c7a, etc.
+        if 'g.' in instance_type or instance_type.endswith('g'):
+            # Graviton (ARM) instances
             image_id = "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+        else:
+            # Intel/AMD (x86) instances
+            image_id = "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
         
         try:
             response = self.client.run_instances(

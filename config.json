@@ -11,19 +11,9 @@
         "median_us": 122,
         "best_us": 102
     },
-    "instance_types": [
-        "c8g.medium",
-        "c8g.large",
-        "c8g.xlarge",
-        "c8g.2xlarge",
-        "c8g.4xlarge",
-        "c8g.8xlarge",
-        "c8g.16xlarge",
-        "c8g.24xlarge",
-        "c8g.metal-24xl"
-    ],
+    "instance_types": ["c8g.4xlarge", "c7g.4xlarge", "c6g.4xlarge"],
     "report_dir": "./reports",
-    "network_init_wait_seconds": 30,
+    "network_init_wait_seconds": 60,
     "timeout_per_domain_seconds": 30,
     "min_timeout_seconds": 180,
     "wait_for_status_checks": false,

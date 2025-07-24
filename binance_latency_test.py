@@ -5,13 +5,14 @@ from datetime import datetime
 DOMAINS = [
     "fstream-mm.binance.com", # futures: xstream, auth stream
     "ws-fapi-mm.binance.com", # futures: wsapi
-    "fapi-mm.binance.com", # futures: restful api
+    #"fapi-mm.binance.com", # futures: restful api, generally not used so ignored
     "stream.binance.com", # spot: xstream, auth stream
     "ws-api.binance.com", # spot: wsapi
-    "api.binance.com", # spot: restful api
+    # "api.binance.com", # spot: restful api, generally not used so ignored
 ]
 
 ATTEMPTS = 1000
+WARMUP_ATTEMPTS = 100  # Warmup attempts to populate caches
 TIMEOUT = 1
 
 # Progress reporting to stderr
@@ -38,8 +39,24 @@ def resolve_ips(hostname):
     return ips
 
 def test_latency(ip, hostname):
-    latencies = []
+    # Warmup phase - establish connections but don't record timings
+    warmup_success = 0
+    for i in range(WARMUP_ATTEMPTS):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect((ip, 443))
+            s.close()
+            warmup_success += 1
+        except socket.error:
+            continue
     
+    if warmup_success == 0:
+        log_progress(f"    ERROR: No successful connections during warmup to {ip}")
+        return float("inf"), float("inf")
+    
+    # Actual measurement phase
+    latencies = []
     for i in range(ATTEMPTS):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -65,7 +82,7 @@ def main():
     total_start = time.time()
     
     log_progress(f"Starting latency tests for {len(DOMAINS)} domains")
-    log_progress(f"Configuration: {ATTEMPTS} attempts per IP, {TIMEOUT}s timeout")
+    log_progress(f"Configuration: {WARMUP_ATTEMPTS} warmup + {ATTEMPTS} measured attempts per IP, {TIMEOUT}s timeout")
     log_progress("=" * 60)
     
     for domain_idx, hostname in enumerate(DOMAINS, 1):
