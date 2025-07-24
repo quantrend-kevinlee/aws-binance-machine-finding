@@ -165,7 +165,7 @@ class SSHClient:
         for i in range(max_attempts):
             stdout, stderr, code = self.run_command(ip, "echo ready", timeout=10)
             if code == 0 and "ready" in stdout:
-                print("SSH is ready!")
+                print("[OK] SSH is ready!")
                 return True
             print(f"  Attempt {i+1}/{max_attempts}...")
             time.sleep(DEFAULT_SSH_RETRY_DELAY)
@@ -213,7 +213,7 @@ class SSHClient:
         )
         
         if code == 0 and "Network ready" in stdout:
-            print("Network stack initialization complete!")
+            print("[OK] Network stack initialization complete!")
             return True
         
         print("Warning: Network may not be fully ready")

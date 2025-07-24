@@ -33,6 +33,10 @@ class Orchestrator:
         self.anchor_instance_id = None
         self.anchor_instance_type = None
         
+        # Track current instance for cleanup on Ctrl+C
+        self._current_instance_id = None
+        self._current_placement_group = None
+        
         # Ensure report directory exists
         ensure_directory_exists(config.report_dir)
         
@@ -79,7 +83,7 @@ class Orchestrator:
     
     def run(self) -> None:
         """Run the main orchestration loop."""
-        print(f"Starting small instance search in {self.config.availability_zone}...")
+        print(f"Starting AWS instance search in AZ {self.config.availability_zone}...")
         
         try:
             while self.running:
@@ -102,8 +106,12 @@ class Orchestrator:
         unix_timestamp = int(time.time())
         placement_group_name = self.pg_manager.generate_placement_group_name(unix_timestamp)
         
+        # Track placement group for cleanup
+        self._current_placement_group = placement_group_name
+        
         print(f"\nCreating placement group {placement_group_name}...")
         if not self.pg_manager.create_placement_group(placement_group_name):
+            self._current_placement_group = None
             time.sleep(5)
             return
         
@@ -117,14 +125,21 @@ class Orchestrator:
         
         if not instance_id:
             self._handle_launch_error(error, placement_group_name)
+            self._current_placement_group = None
             return
         
-        print(f"Instance {instance_id} launched.")
+        # Track instance for cleanup
+        self._current_instance_id = instance_id
+        print(f"[OK] Instance {instance_id} launched.")
         
         # Process the instance
         success = self._process_instance(
             instance_id, instance_type, placement_group_name
         )
+        
+        # Clear tracking after processing
+        self._current_instance_id = None
+        self._current_placement_group = None
         
         if not success:
             # Instance failed somewhere in processing
@@ -159,7 +174,10 @@ class Orchestrator:
         """
         # Wait for instance to be running
         if not self.ec2_manager.wait_for_running(instance_id):
-            pass  # Continue anyway
+            print("[WARN] Instance not running within timeout, terminating...")
+            self.ec2_manager.terminate_instance(instance_id)
+            self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
+            return False
         
         # Associate EIP
         if not self.eip_manager.associate_eip(instance_id):
@@ -176,7 +194,7 @@ class Orchestrator:
             time.sleep(2)
             return False
         
-        print(f"EIP address: {eip_address}")
+        print(f"[OK] EIP address: {eip_address}")
         
         # Wait for SSH
         if not self.ssh_client.wait_for_ssh(eip_address):
@@ -363,22 +381,24 @@ class Orchestrator:
         print("\n[CTRL-C] Graceful shutdown requested...")
         
         # Check if we have a current instance to handle
-        current_instance = getattr(self, '_current_instance_id', None)
-        if current_instance:
-            if current_instance == self.anchor_instance_id:
-                print(f"-> Preserving anchor instance {current_instance} "
+        if self._current_instance_id:
+            if self._current_instance_id == self.anchor_instance_id:
+                print(f"-> Preserving anchor instance {self._current_instance_id} "
                       f"(EIP will remain associated)")
-            elif self.champion_state_manager.is_instance_champion(current_instance):
-                domains = self.champion_state_manager.get_instance_domains(current_instance)
-                print(f"-> Preserving champion {current_instance} for: {', '.join(domains)}")
+            elif self.champion_state_manager.is_instance_champion(self._current_instance_id):
+                domains = self.champion_state_manager.get_instance_domains(self._current_instance_id)
+                print(f"-> Preserving champion {self._current_instance_id} for: {', '.join(domains)}")
             else:
-                print(f"-> Terminating pending instance {current_instance} ...")
-                self.ec2_manager.terminate_instance(current_instance)
+                print(f"-> Terminating pending instance {self._current_instance_id} ...")
+                self.ec2_manager.terminate_instance(self._current_instance_id)
                 # Schedule placement group cleanup if exists
-                current_pg = getattr(self, '_current_placement_group', None)
-                if current_pg:
-                    print(f"-> Scheduling cleanup of placement group {current_pg} ...")
-                    self.pg_manager.schedule_async_cleanup(current_instance, current_pg)
+                if self._current_placement_group:
+                    print(f"-> Scheduling cleanup of placement group {self._current_placement_group} ...")
+                    self.pg_manager.schedule_async_cleanup(self._current_instance_id, self._current_placement_group)
+        elif self._current_placement_group:
+            # Placement group exists but no instance - clean up PG directly
+            print(f"-> Deleting unused placement group {self._current_placement_group} ...")
+            self.pg_manager.delete_placement_group(self._current_placement_group)
         
         # Wait for cleanup threads
         self.pg_manager.wait_for_cleanup_threads()

@@ -13,7 +13,6 @@ DOMAINS = [
 
 ATTEMPTS = 1000
 TIMEOUT = 1
-HOSTNAMES = DOMAINS
 
 # Progress reporting to stderr
 def log_progress(message):
@@ -65,13 +64,13 @@ def main():
     results = {}
     total_start = time.time()
     
-    log_progress(f"Starting latency tests for {len(HOSTNAMES)} domains")
+    log_progress(f"Starting latency tests for {len(DOMAINS)} domains")
     log_progress(f"Configuration: {ATTEMPTS} attempts per IP, {TIMEOUT}s timeout")
     log_progress("=" * 60)
     
-    for domain_idx, hostname in enumerate(HOSTNAMES, 1):
+    for domain_idx, hostname in enumerate(DOMAINS, 1):
         domain_start = time.time()
-        log_progress(f"\n[{domain_idx}/{len(HOSTNAMES)}] Testing domain: {hostname}")
+        log_progress(f"\n[{domain_idx}/{len(DOMAINS)}] Testing domain: {hostname}")
         
         ips = resolve_ips(hostname)
         results[hostname] = {"ips": {}}
@@ -89,7 +88,6 @@ def main():
                     "median": median_us,
                     "best": best_us
                 }
-                log_progress(f"    Result: median={median_us:.2f}µs, best={best_us:.2f}µs")
             except Exception as e:
                 log_progress(f"    ERROR: Exception during latency test: {e}")
                 results[hostname]["ips"][ip] = {

@@ -36,7 +36,7 @@ class ChampionStateManager:
             with open(self.state_file, 'r') as f:
                 state = json.load(f)
             
-            print(f"[LOAD] Loaded champion state (format v{state.get('format_version', '1.0')}):")
+            print(f"[LOAD] Loaded champion state (format v{state.get('format_version', self.FORMAT_VERSION)}):")
             
             champions = state.get('champions', {})
             if not champions:

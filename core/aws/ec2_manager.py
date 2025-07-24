@@ -193,7 +193,7 @@ class EC2Manager:
             
             if status['system_status'] == 'ok' and status['instance_status'] == 'ok':
                 elapsed = int(time.time() - start_time)
-                print(f"Status checks passed after {elapsed} seconds")
+                print(f"[OK] Status checks passed after {elapsed} seconds")
                 return True
             
             # Show progress
@@ -244,7 +244,7 @@ class EC2Manager:
                 Resources=[instance_id],
                 Tags=[{'Key': 'Name', 'Value': new_name}]
             )
-            print(f"Updated instance {instance_id} name to: {new_name}")
+            print(f"[OK] Updated instance {instance_id} name to: {new_name}")
             return True
         except Exception as e:
             print(f"[ERROR] Failed to update instance name: {e}")

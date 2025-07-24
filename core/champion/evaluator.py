@@ -1,7 +1,6 @@
 """Champion evaluation logic for DC Machine."""
 
 from typing import Dict, Set, Tuple, Any, Optional
-import datetime
 
 from ..utils import get_current_timestamp
 
