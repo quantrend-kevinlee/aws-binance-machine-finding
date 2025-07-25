@@ -22,6 +22,9 @@ An instance passes if ANY IP from the Binance domains meets:
 # Initial AWS setup (one-time)
 python3 tool_scripts/setup_aws_resources.py
 
+# Pre-discover IPs for comprehensive testing (recommended)
+python3 discover_ips.py
+
 # Start finding low-latency instances
 python3 find_instance.py
 
@@ -44,6 +47,7 @@ python3 tool_scripts/query_jsonl.py all
    - **champion/**: Champion selection and persistence
    - **testing/**: SSH and latency test execution
    - **logging/**: JSONL and text format logging
+   - **ip_discovery/**: Comprehensive IP discovery and validation
 
 3. **binance_latency_test.py** - Latency measurement script
    - Runs on each EC2 instance
@@ -83,6 +87,10 @@ python3 tool_scripts/query_jsonl.py all
         "median_us": 122,
         "best_us": 102
     },
+    "domains": [
+        "fstream-mm.binance.com",
+        "ws-fapi-mm.binance.com"
+    ],
     "instance_types": [
         "c8g.medium",
         "c8g.large", 
@@ -101,14 +109,72 @@ python3 tool_scripts/query_jsonl.py all
 
 ### Binance Domains
 
-Defined in `binance_latency_test.py`:
+Domains are now centrally configured in `config.json`:
 
-```python
-DOMAINS = [
-    "fstream-mm.binance.com",    # Futures stream
-    "ws-fapi-mm.binance.com",     # WebSocket API
-    "fapi-mm.binance.com"         # Futures REST API
+```json
+"domains": [
+    "fstream-mm.binance.com",  // Futures stream
+    "ws-fapi-mm.binance.com"   // WebSocket API
 ]
+```
+
+Additional domains can be added as needed:
+- `"fapi-mm.binance.com"` - Futures REST API
+- `"stream.binance.com"` - Spot stream
+- `"ws-api.binance.com"` - Spot WebSocket API
+- `"api.binance.com"` - Spot REST API
+
+## IP Discovery System
+
+### Overview
+
+The IP discovery system addresses DNS limitations and ensures comprehensive testing:
+- DNS servers typically return only 8 IPs per query (round-robin subset)
+- AWS DNS cache TTL is 60 seconds
+- IPs can change as nodes are added/removed
+
+### How It Works
+
+1. **Continuous Discovery** (`discover_ips.py`):
+   - Queries each domain multiple times per batch
+   - Waits 60 seconds between batches to bypass DNS cache
+   - Builds comprehensive IP list over time
+   - Validates IP liveness with TCP connectivity tests
+   - Persists IP data to `reports/ip_lists/`
+
+2. **Integration with Testing**:
+   - Orchestrator validates existing IPs on startup
+   - Background collection continues during instance testing
+   - Test instances receive comprehensive IP list (not just DNS subset)
+   - No local DNS resolution needed on test instances
+
+3. **IP List Format**:
+```json
+{
+  "last_updated": "2025-07-25T10:30:00+08:00",
+  "domains": {
+    "fstream-mm.binance.com": {
+      "ips": {
+        "54.65.8.148": {
+          "first_seen": "2025-07-25T10:00:00+08:00",
+          "last_seen": "2025-07-25T10:30:00+08:00",
+          "last_validated": "2025-07-25T10:30:00+08:00",
+          "alive": true
+        }
+      }
+    }
+  }
+}
+```
+
+### Usage
+
+```bash
+# Standalone IP discovery (recommended before main run)
+python3 discover_ips.py
+
+# Continuous mode for long-term collection
+python3 discover_ips.py --continuous
 ```
 
 ## Testing Workflow
@@ -277,7 +343,20 @@ AWS cluster placement groups provide lowest latency within a rack, but:
 
 The system uses a **hybrid approach** to balance speed and accuracy:
 
-#### 1. EC2 Status Checks (Optional)
+#### 1. System Optimizations (Automatic)
+System optimizations are now applied automatically via EC2 user data when the instance boots:
+- CPU C-states disabled for consistent latency
+- CPU governor set to performance mode
+- IRQ balancing disabled
+- Network stack tuned for low latency
+- Tuned profile set to network-latency
+
+Optimizations are logged to `/var/log/dc-machine-optimizer.log` and can be verified with:
+```bash
+python3 tool_scripts/check_optimizations.py <instance-id>
+```
+
+#### 2. EC2 Status Checks (Optional)
 - **check_status_before_test** (default: true): Checks current status without waiting
 - **wait_for_status_checks** (default: false): Waits for status checks to pass (adds 3-5 minutes)
 
@@ -286,21 +365,33 @@ Status checks verify:
 - **Instance Status**: OS responds to ARP requests
 - Typically take 3.5-4.5 minutes to complete
 
-#### 2. Network Initialization Wait
-After SSH is ready, the system waits (configurable via network_init_wait_seconds) to ensure:
+#### 3. Instance Readiness Check
+After SSH is ready, the system waits (configurable via network_init_wait_seconds) for the instance to be fully ready:
 
-1. **CPU Load Settles**: Boot processes complete and stop consuming CPU cycles
-2. **Network Stack Optimizes**: Kernel network parameters fully load
-3. **ARP Cache Populates**: Initial ARP resolutions complete
-4. **Routing Tables Converge**: Network paths optimize
+1. **EC2 Status Checks**: Monitors system and instance health status
+2. **CPU Load Monitoring**: Ensures boot processes have completed
+3. **Network Verification**: Confirms network connectivity is working
+4. **Optimization Time**: Allows kernel parameters and user data scripts to take effect
 
-Without this wait, latency measurements can be inaccurate due to:
-- CPU contention from initialization tasks affecting TCP handshake timing
-- Empty ARP cache causing first connections to include ARP resolution time
-- Network buffers and kernel parameters not yet optimized
-- EC2's known ARP cache inheritance issue (requiring `gc_thresh1=0`)
+The wait will **terminate early** if:
+- ✅ EC2 status checks pass (both system and instance show 'ok')
+- ❌ EC2 status checks fail (either shows 'impaired') - instance is terminated
 
-The system monitors CPU load during this wait period and displays progress.
+This ensures:
+- Fast processing when instances are healthy
+- No time wasted on failed instances
+- Automatic termination and rotation to next instance type on failures
+
+Common causes of status check failures:
+- Hardware issues on the physical host (system impaired)
+- Kernel panics or boot failures (instance impaired)
+- Network configuration problems
+- Memory exhaustion or file system corruption
+
+The system displays:
+- CPU load average every 5 seconds
+- EC2 status check results every 15 seconds
+- Clear messages on pass/fail conditions
 
 #### Recommended Settings
 - **Fast iteration** (default): `wait_for_status_checks: false, network_init_wait_seconds: 30`
@@ -322,6 +413,17 @@ aws ec2 associate-address \
   --instance-id i-03fa7ce9d925be452 \
   --allocation-id eipalloc-05500f18fa63990b6
 ssh -i ~/.ssh/dc-machine ec2-user@<EIP_ADDRESS>
+```
+
+#### Checking Optimization Status
+
+To verify if system optimizations were applied:
+```bash
+# Check optimization status on any instance
+python3 tool_scripts/check_optimizations.py i-03fa7ce9d925be452
+
+# Manually apply optimizations if needed (e.g., for older instances)
+python3 tool_scripts/run_optimizer.py i-03fa7ce9d925be452
 ```
 
 #### SSH Without Known Hosts Issues
@@ -356,12 +458,13 @@ python3 tool_scripts/cleanup_orphaned_placement_groups.py
 
 ## Scripts Reference
 
-### Main Script
+### Main Scripts
 
 | Script | Purpose |
 |--------|---------|
 | `find_instance.py` | Main entry point - orchestrates the instance finding process |
 | `binance_latency_test.py` | Latency test executed on each instance |
+| `discover_ips.py` | Standalone IP discovery and validation tool |
 
 ### Tool Scripts
 
@@ -375,6 +478,9 @@ Located in `tool_scripts/` directory:
 | `cleanup_orphaned_placement_groups.py` | Remove orphaned placement groups from terminated instances |
 | `bind_eip.py` | Bind Elastic IP to an instance by ID |
 | `ssh_instance.py` | SSH into instance by ID (auto-binds EIP) |
+| `check_optimizations.py` | Check if system optimizations are applied on instance |
+| `run_optimizer.py` | Manually apply system optimizations to instance |
+| `terminate_all_champions.py` | Terminate all champion instances and clean up placement groups |
 
 ### Configuration Files
 
@@ -384,6 +490,8 @@ Located in `tool_scripts/` directory:
 | `reports/champion_state.json` | Current champion instances |
 | `reports/latency_log_*.jsonl` | Test results in JSONL format |
 | `reports/latency_log_*.txt` | Detailed test logs |
+| `reports/ip_lists/ip_list_latest.json` | Latest discovered IP addresses |
+| `reports/ip_lists/ip_list_*.json` | Historical IP snapshots |
 
 ## Troubleshooting
 

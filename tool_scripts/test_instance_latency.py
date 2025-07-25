@@ -15,6 +15,7 @@ import sys
 import os
 import json
 import subprocess
+import socket
 
 def main():
     if len(sys.argv) != 2:
@@ -86,6 +87,122 @@ def main():
         print(result.stderr)
         sys.exit(1)
     
+    # Check if we have an IP list available
+    ip_list_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports", "ip_lists", "ip_list_latest.json")
+    ip_list_loaded = False
+    
+    if os.path.exists(ip_list_file):
+        # Try to load IP list directly from file
+        try:
+            # Add parent directory to path for imports
+            parent_dir = os.path.dirname(os.path.dirname(__file__))
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+            
+            # Try using the core module
+            try:
+                from core.ip_discovery import IPPersistence
+                persistence = IPPersistence(config['report_dir'])
+                ip_data = persistence.load_latest()
+                ip_list = persistence.get_all_active_ips(ip_data)
+            except ImportError:
+                # Fallback: Load IP list directly from file
+                print("[INFO] Loading IP list directly from file")
+                with open(ip_list_file, 'r') as f:
+                    ip_data = json.load(f)
+                
+                # Extract IPs from the data structure
+                ip_list = {}
+                for domain, domain_data in ip_data.get('domains', {}).items():
+                    active_ips = []
+                    for ip, ip_info in domain_data.get('ips', {}).items():
+                        if ip_info.get('alive', True):  # Default to True if not specified
+                            active_ips.append(ip)
+                    if active_ips:
+                        ip_list[domain] = active_ips
+            
+            if ip_list:
+                # Deploy IP list to remote
+                ip_json = json.dumps(ip_list)
+                # Use a temporary file to avoid shell escaping issues
+                with open('/tmp/ip_list_deploy.json', 'w') as f:
+                    f.write(ip_json)
+                
+                # SCP the IP list file
+                scp_ip_cmd = [
+                    "scp",
+                    "-i", key_path,
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "/tmp/ip_list_deploy.json",
+                    f"ec2-user@{eip_address}:/tmp/ip_list.json"
+                ]
+                result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
+                
+                # Clean up temporary file
+                os.unlink('/tmp/ip_list_deploy.json')
+                
+                if result.returncode == 0:
+                    print(f"[INFO] Using discovered IP list for testing ({len(ip_list)} domains)")
+                    # Pass domains from config
+                    domains_args = " ".join(f'"{domain}"' for domain in config.get('domains', []))
+                    test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
+                    ip_list_loaded = True
+                else:
+                    print(f"[WARN] Failed to deploy IP list: {result.stderr}")
+            else:
+                print("[INFO] No active IPs found in IP list")
+                
+        except Exception as e:
+            print(f"[WARN] Failed to load IP list: {e}")
+    else:
+        print("[INFO] No IP list file found at expected location")
+    
+    # If IP list wasn't loaded, we need to provide domains at minimum
+    if not ip_list_loaded:
+        print("[WARN] Running without pre-discovered IPs (DNS resolution only)")
+        # Create a minimal IP list by doing DNS resolution locally
+        print("[INFO] Performing local DNS resolution for domains...")
+        
+        minimal_ip_list = {}
+        for domain in config.get('domains', []):
+            try:
+                # Do DNS resolution
+                ips = socket.gethostbyname_ex(domain)[2]
+                if ips:
+                    minimal_ip_list[domain] = ips
+                    print(f"  - {domain}: {len(ips)} IPs resolved")
+            except Exception as e:
+                print(f"  - {domain}: DNS resolution failed: {e}")
+        
+        if minimal_ip_list:
+            # Deploy minimal IP list
+            ip_json = json.dumps(minimal_ip_list)
+            with open('/tmp/ip_list_deploy.json', 'w') as f:
+                f.write(ip_json)
+            
+            # SCP the IP list file
+            scp_ip_cmd = [
+                "scp",
+                "-i", key_path,
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "/tmp/ip_list_deploy.json",
+                f"ec2-user@{eip_address}:/tmp/ip_list.json"
+            ]
+            result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
+            os.unlink('/tmp/ip_list_deploy.json')
+            
+            if result.returncode == 0:
+                domains_args = " ".join(f'"{domain}"' for domain in config.get('domains', []))
+                test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
+            else:
+                print("[ERROR] Failed to deploy even minimal IP list")
+                sys.exit(1)
+        else:
+            print("[ERROR] Could not resolve any domains")
+            sys.exit(1)
+    
     # Run the test
     ssh_cmd = [
         "ssh",
@@ -93,7 +210,7 @@ def main():
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         f"ec2-user@{eip_address}",
-        "python3 binance_latency_test.py"
+        test_command
     ]
     
     # Run with real-time output
@@ -161,8 +278,9 @@ def main():
             
             # Print detailed results per domain and IP
             instance_passed = False
+            summary_data = {}  # Collect summary data
             
-            # First print the summary line
+            # Domain abbreviations
             domain_abbrev = {
                 "fstream-mm.binance.com": "fstream-mm",
                 "ws-fapi-mm.binance.com": "ws-fapi-mm",
@@ -172,41 +290,6 @@ def main():
                 "api.binance.com": "api"
             }
             
-            # Collect summary data first
-            summary_lines = []
-            for domain, data in results.items():
-                if "error" in data:
-                    continue
-                
-                # Find best median and best single across all IPs
-                best_median = float('inf')
-                best_single = float('inf')
-                best_median_ip = None
-                best_single_ip = None
-                
-                for ip, stats in data.get("ips", {}).items():
-                    if stats["median"] < best_median:
-                        best_median = stats["median"]
-                        best_median_ip = ip
-                    if stats["best"] < best_single:
-                        best_single = stats["best"]
-                        best_single_ip = ip
-                
-                # Check if passed
-                domain_passed = best_median <= median_threshold or best_single <= best_threshold
-                if domain_passed:
-                    instance_passed = True
-                
-                # Format output like the main script
-                abbrev = domain_abbrev.get(domain, domain[:10])
-                summary_lines.append(f"  {abbrev}: median={best_median:.2f}µs ({best_median_ip}), best={best_single:.2f}µs ({best_single_ip})")
-            
-            # Print summary
-            for line in summary_lines:
-                print(line)
-            print(f"  Passed: {instance_passed}")
-            
-            # Print detailed results
             print("\nDetailed results by IP:")
             for domain, data in results.items():
                 if "error" in data:
@@ -215,12 +298,48 @@ def main():
                 
                 print(f"  {domain}:")
                 
+                # Find best median and best single across all IPs
+                best_median = float('inf')
+                best_single = float('inf')
+                best_median_ip = None
+                best_single_ip = None
+                
                 # Sort IPs for consistent output
                 ips = sorted(data.get("ips", {}).items())
                 for ip, stats in ips:
                     median = stats["median"]
                     best = stats["best"]
                     print(f"    IP {ip:<15} median={median:>8.2f} µs  best={best:>8.2f} µs")
+                    
+                    # Track best values
+                    if median < best_median:
+                        best_median = median
+                        best_median_ip = ip
+                    if best < best_single:
+                        best_single = best
+                        best_single_ip = ip
+                
+                # Store summary data
+                summary_data[domain] = {
+                    "best_median": best_median,
+                    "best_median_ip": best_median_ip,
+                    "best_single": best_single,
+                    "best_single_ip": best_single_ip,
+                    "passed": best_median <= median_threshold or best_single <= best_threshold
+                }
+                
+                if summary_data[domain]["passed"]:
+                    instance_passed = True
+            
+            # Print summary at the bottom
+            print("\nSummary - Best results per domain:")
+            print("-" * 80)
+            for domain, summary in summary_data.items():
+                abbrev = domain_abbrev.get(domain, domain[:10])
+                print(f"  {abbrev}: median={summary['best_median']:.2f}µs ({summary['best_median_ip']}), "
+                      f"best={summary['best_single']:.2f}µs ({summary['best_single_ip']})")
+            print(f"\n  Instance Passed: {instance_passed}")
+            print("-" * 80)
             
         except json.JSONDecodeError:
             print("\nRaw output:")

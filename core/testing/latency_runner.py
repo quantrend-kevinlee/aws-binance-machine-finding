@@ -10,23 +10,24 @@ from .ssh_client import SSHClient
 class LatencyTestRunner:
     """Runs latency tests on EC2 instances."""
     
-    def __init__(self, ssh_client: SSHClient, num_domains: int = 3, 
+    def __init__(self, ssh_client: SSHClient, domains: list = None,
                  timeout_per_domain: int = 30, min_timeout: int = 180):
         """Initialize latency test runner.
         
         Args:
             ssh_client: SSH client instance
-            num_domains: Number of domains to test (for timeout calculation)
+            domains: List of domains to test
             timeout_per_domain: Timeout seconds per domain
             min_timeout: Minimum timeout regardless of domain count
         """
         self.ssh_client = ssh_client
         self._test_script = None
-        self.num_domains = num_domains
+        self.domains = domains or []
+        self.num_domains = len(self.domains)
         self.timeout_per_domain = timeout_per_domain
         self.min_timeout = min_timeout
         # Calculate timeout based on domain count, with configured minimum
-        self.test_timeout = max(self.min_timeout, self.timeout_per_domain * num_domains)
+        self.test_timeout = max(self.min_timeout, self.timeout_per_domain * self.num_domains)
     
     def load_test_script(self, script_path: str = "binance_latency_test.py") -> None:
         """Load the latency test script.
@@ -38,11 +39,12 @@ class LatencyTestRunner:
         with open(full_path, "r") as f:
             self._test_script = f.read()
     
-    def run_latency_test(self, eip_address: str) -> Optional[Dict[str, Any]]:
+    def run_latency_test(self, eip_address: str, ip_list: Optional[Dict[str, list]] = None) -> Optional[Dict[str, Any]]:
         """Run latency test on instance and return results.
         
         Args:
             eip_address: EIP address of instance
+            ip_list: Optional dict of domain -> list of IPs to test
             
         Returns:
             Test results dict or None on failure
@@ -57,6 +59,31 @@ class LatencyTestRunner:
         if not self.ssh_client.deploy_script(eip_address, self._test_script, "/tmp/latency_test.py"):
             return None
         
+        # Build test command with domains
+        if self.domains:
+            domains_args = " ".join(f'"{domain}"' for domain in self.domains)
+            base_command = f"python3 /tmp/latency_test.py --domains {domains_args}"
+        else:
+            base_command = "python3 /tmp/latency_test.py"
+        
+        # Add IP list if provided
+        if ip_list:
+            # Deploy IP list as JSON file
+            ip_list_json = json.dumps(ip_list)
+            deploy_cmd = f"echo '{ip_list_json}' > /tmp/ip_list.json"
+            stdout, stderr, code = self.ssh_client.run_command(eip_address, deploy_cmd)
+            if code != 0:
+                print(f"[ERROR] Failed to deploy IP list: {stderr}")
+                return None
+            
+            # Run test with IP list
+            test_command = f"{base_command} --ip-list /tmp/ip_list.json"
+            print("[INFO] Using provided IP list for testing")
+        else:
+            # Run test in legacy mode (local DNS resolution)
+            test_command = base_command
+            print("[INFO] Using legacy mode with local DNS resolution")
+        
         # Run the test script with progress display
         print(f"Executing latency tests (timeout: {self.test_timeout}s for {self.num_domains} domains)...")
         print(f"Timeout configuration: {self.timeout_per_domain}s per domain, {self.min_timeout}s minimum")
@@ -65,7 +92,7 @@ class LatencyTestRunner:
         
         stdout, stderr, code = self.ssh_client.run_command_with_progress(
             eip_address, 
-            "python3 /tmp/latency_test.py", 
+            test_command, 
             timeout=self.test_timeout
         )
         

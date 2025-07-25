@@ -11,9 +11,15 @@
         "median_us": 122,
         "best_us": 102
     },
-    "instance_types": ["c8g.4xlarge", "c7g.4xlarge", "c6g.4xlarge"],
+    "domains": ["fstream-mm.binance.com", "ws-fapi-mm.binance.com"],
+    "instance_types": [
+        "c8g.4xlarge",
+        "c8g.metal-24xl",
+        "c6g.4xlarge",
+        "c7g.4xlarge"
+    ],
     "report_dir": "./reports",
-    "network_init_wait_seconds": 60,
+    "network_init_wait_seconds": 600,
     "timeout_per_domain_seconds": 30,
     "min_timeout_seconds": 180,
     "wait_for_status_checks": false,

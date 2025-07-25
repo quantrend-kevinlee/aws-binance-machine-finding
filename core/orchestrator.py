@@ -6,9 +6,7 @@ import datetime
 import os
 from typing import Optional, Dict, Any
 
-# Add parent directory to path to import binance_latency_test
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from binance_latency_test import DOMAINS
+# No longer need to import DOMAINS from binance_latency_test
 
 from .config import Config
 from .aws import EC2Manager, PlacementGroupManager, EIPManager
@@ -16,6 +14,7 @@ from .champion import ChampionStateManager, ChampionEvaluator, ChampionEventLogg
 from .testing import SSHClient, LatencyTestRunner, ResultProcessor
 from .logging import JSONLLogger, TextLogger
 from .utils import get_current_timestamp, get_log_file_paths, ensure_directory_exists
+from .ip_discovery import IPCollector, IPValidator, IPPersistence
 
 
 class Orchestrator:
@@ -58,7 +57,7 @@ class Orchestrator:
         # Timeouts are configurable via timeout_per_domain_seconds and min_timeout_seconds
         self.latency_runner = LatencyTestRunner(
             self.ssh_client, 
-            num_domains=len(DOMAINS),
+            domains=config.domains,
             timeout_per_domain=config.timeout_per_domain_seconds,
             min_timeout=config.min_timeout_seconds
         )
@@ -72,6 +71,13 @@ class Orchestrator:
         
         # Track start date for daily rotation
         self.start_date = datetime.date.today()
+        
+        # Initialize IP discovery
+        self.ip_persistence = IPPersistence(config.report_dir)
+        self.ip_collector = IPCollector(config.domains, queries_per_batch=3, batch_interval=60)
+        self.ip_validator = IPValidator()
+        self.ip_data = None
+        self.ip_list = None
     
     def _update_log_files(self) -> None:
         """Update log file paths for current date."""
@@ -81,9 +87,84 @@ class Orchestrator:
         self.text_logger = TextLogger(text_file)
         self.champion_event_logger = ChampionEventLogger(champion_log_file)
     
+    def _initialize_ip_discovery(self) -> None:
+        """Initialize IP discovery and validate existing IPs."""
+        # Load existing IP data
+        self.ip_data = self.ip_persistence.load_latest()
+        existing_count = sum(len(d.get('ips', {})) for d in self.ip_data.get('domains', {}).values())
+        
+        if existing_count > 0:
+            
+            # Get all active IPs for validation
+            all_active_ips = self.ip_persistence.get_all_active_ips(self.ip_data)
+            
+            # Validate IPs
+            validation_results = self.ip_validator.validate_domain_ips(all_active_ips, show_progress=True)
+            
+            # Update IP status based on validation
+            dead_count = 0
+            for domain, results in validation_results.items():
+                for ip, (is_alive, latency) in results.items():
+                    self.ip_persistence.update_ip(self.ip_data, domain, ip, alive=is_alive, validated=True)
+                    if not is_alive:
+                        dead_count += 1
+            
+            # Remove dead IPs
+            if dead_count > 0:
+                # Create snapshot before removing dead IPs (preserves historical record)
+                self.ip_persistence.save(self.ip_data, create_snapshot=True)
+                removed = self.ip_persistence.remove_dead_ips(self.ip_data)
+                print(f"[INFO] Removed {removed} dead IPs from active list")
+            
+            # Save updated IP data (without dead IPs)
+            self.ip_persistence.save(self.ip_data)
+        else:
+            print("[WARN] No IPs found. Run 'python3 discover_ips.py' first")
+        
+        # Get active IP list for testing
+        self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
+        active_count = sum(len(ips) for ips in self.ip_list.values())
+        if active_count > 0:
+            print(f"[INFO] Testing with {active_count} active IPs:")
+            for domain, ips in self.ip_list.items():
+                print(f"  - {domain}: {len(ips)} active IPs")
+        
+        # Start background IP collection
+        def on_new_ips(domain, new_ips):
+            """Callback for new IPs found."""
+            print(f"[IP Discovery] Validating {len(new_ips)} new IPs for {domain}...")
+            
+            # Validate new IPs before adding
+            validation_results = self.ip_validator.validate_ips(list(new_ips), show_progress=False)
+            alive_count = 0
+            
+            for ip in new_ips:
+                is_alive, latency = validation_results.get(ip, (False, -1))
+                self.ip_persistence.update_ip(self.ip_data, domain, ip, alive=is_alive, validated=True)
+                if is_alive:
+                    alive_count += 1
+                    print(f"[IP Discovery] Added {ip} for {domain} (latency: {latency:.1f}ms)")
+                else:
+                    print(f"[IP Discovery] Skipped {ip} for {domain} (not reachable)")
+            
+            if alive_count > 0:
+                self.ip_persistence.save(self.ip_data)
+                # Update active IP list
+                self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
+                # Show actual total active IPs from persistence
+                total_active = len(self.ip_list.get(domain, []))
+                print(f"[IP Discovery] Added {alive_count} new active IPs to {domain} (total active: {total_active})")
+        
+        self.ip_collector.start(callback=on_new_ips)
+        print("[OK] Background IP discovery started")
+        print("="*60 + "\n")
+    
     def run(self) -> None:
         """Run the main orchestration loop."""
         print(f"Starting AWS instance search in AZ {self.config.availability_zone}...")
+        
+        # Initialize IP discovery
+        self._initialize_ip_discovery()
         
         try:
             while self.running:
@@ -214,20 +295,35 @@ class Orchestrator:
                 # Just check status without waiting (non-blocking)
                 self.ec2_manager.check_instance_status(instance_id)
         
-        # Wait for network stack to fully initialize
-        # This ensures accurate latency measurements by waiting for:
-        # - CPU load from boot processes to settle
-        # - Network stack optimization to complete
-        # - ARP cache to populate
-        # - Kernel network parameters to load
+        # Wait for instance to be fully ready for testing
+        # This ensures accurate latency measurements by:
+        # - Checking EC2 status (system and instance health)
+        # - Monitoring CPU load to ensure boot processes have settled
+        # - Verifying network connectivity
+        # - Allowing time for kernel optimizations to take effect
+        # Will terminate early if status checks fail (impaired)
         # Wait time is configurable via network_init_wait_seconds in config.json
-        self.ssh_client.wait_for_network_ready(
+        instance_ready = self.ssh_client.wait_for_instance_ready(
             eip_address, 
-            wait_time=self.config.network_init_wait_seconds
+            wait_time=self.config.network_init_wait_seconds,
+            instance_id=instance_id,
+            ec2_manager=self.ec2_manager
         )
         
+        # If status checks failed, terminate instance and try next
+        if not instance_ready:
+            print("[ERROR] Instance failed EC2 status checks. Terminating...")
+            self.ec2_manager.terminate_instance(instance_id)
+            self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
+            time.sleep(2)
+            return False
+        
+        # Reload latest IP data to include any newly discovered IPs
+        self.ip_data = self.ip_persistence.load_latest()
+        self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
+        
         # Run latency test
-        results = self.latency_runner.run_latency_test(eip_address)
+        results = self.latency_runner.run_latency_test(eip_address, ip_list=self.ip_list)
         if not results:
             self.ec2_manager.terminate_instance(instance_id)
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
@@ -278,7 +374,7 @@ class Orchestrator:
         
         new_champions, replaced_instances = self.champion_evaluator.evaluate_new_champions(
             domain_stats, current_champions, instance_id, instance_type,
-            placement_group_name, DOMAINS
+            placement_group_name, self.config.domains
         )
         
         if new_champions:
@@ -399,6 +495,10 @@ class Orchestrator:
             # Placement group exists but no instance - clean up PG directly
             print(f"-> Deleting unused placement group {self._current_placement_group} ...")
             self.pg_manager.delete_placement_group(self._current_placement_group)
+        
+        # Stop IP collector
+        print("-> Stopping IP discovery...")
+        self.ip_collector.stop()
         
         # Wait for cleanup threads
         self.pg_manager.wait_for_cleanup_threads()

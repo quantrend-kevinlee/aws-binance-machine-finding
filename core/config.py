@@ -133,3 +133,8 @@ class Config:
     def check_status_before_test(self) -> bool:
         """Whether to check (but not wait for) status checks before testing."""
         return self._data.get('check_status_before_test', True)  # Default to True for visibility
+    
+    @property
+    def domains(self) -> List[str]:
+        """List of domains to test latency against."""
+        return self._data.get('domains', [])  # Default to empty list
