@@ -141,11 +141,15 @@ class LatencyTestRunner:
             print(f"  {hostname}:")
             
             for ip, ip_data in host_data["ips"].items():
-                median = ip_data["median"]
-                best = ip_data["best"]
+                median = ip_data.get("median", float("inf"))
+                best = ip_data.get("best", float("inf"))
+                avg = ip_data.get("average", float("inf"))
+                p99 = ip_data.get("p99", float("inf"))
+                max_val = ip_data.get("max", float("inf"))
                 
                 # Check if this IP meets criteria
                 ip_passed = (median <= median_threshold) or (best <= best_threshold)
                 
-                print(f"    IP {ip:<15}  median={median:9.2f} µs  "
-                      f"best={best:9.2f} µs  passed={ip_passed}")
+                print(f"    IP {ip:<15}  median={median:7.2f}  best={best:7.2f}  "
+                      f"avg={avg:7.2f}  p99={p99:7.2f}  max={max_val:7.2f} µs  "
+                      f"passed={ip_passed}")

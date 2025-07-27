@@ -125,16 +125,6 @@ class Config:
         return self._data.get('min_timeout_seconds', 180)  # Default to 180 seconds
     
     @property
-    def wait_for_status_checks(self) -> bool:
-        """Whether to wait for EC2 status checks to pass before testing."""
-        return self._data.get('wait_for_status_checks', False)  # Default to False for speed
-    
-    @property
-    def check_status_before_test(self) -> bool:
-        """Whether to check (but not wait for) status checks before testing."""
-        return self._data.get('check_status_before_test', True)  # Default to True for visibility
-    
-    @property
     def domains(self) -> List[str]:
         """List of domains to test latency against."""
         return self._data.get('domains', [])  # Default to empty list

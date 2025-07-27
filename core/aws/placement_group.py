@@ -72,7 +72,7 @@ class PlacementGroupManager:
         """
         def cleanup():
             print(f"[Background] Scheduled cleanup for PG {placement_group_name} "
-                  f"(checking every minute for up to 30 minutes)")
+                  f"(checking every 10 seconds for up to 30 minutes)")
             
             # Create a new EC2 client for this thread
             thread_client = boto3.client('ec2', region_name=self.config.region)
@@ -117,14 +117,14 @@ class PlacementGroupManager:
         
         print(f"\n[WAIT] Waiting for {len(active_threads)} background cleanup task(s) to complete...")
         print("   This ensures all instances are terminated and placement groups are deleted.")
-        print("   (Checking every minute, up to 30 minutes per task)")
+        print("   (Checking every 10 seconds, up to 30 minutes per task)")
         
         start_wait = time.time()
         last_count = len(active_threads)
         
         while active_threads:
-            # Show progress every 30 seconds
-            time.sleep(30)
+            # Show progress every 10 seconds to match cleanup check interval
+            time.sleep(10)
             active_threads = [t for t in self.cleanup_threads if t.is_alive()]
             
             if len(active_threads) < last_count:

@@ -114,7 +114,7 @@ def main():
         print(f"  Standard SSH:")
         print(f"    ssh -i {key_path} ec2-user@{public_ip}")
         print(f"\n  SSH without host key checking (useful for dynamic IPs):")
-        print(f"    ssh -i {key_path} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@{public_ip}")
+        print(f"    ssh -i {key_path} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ec2-user@{public_ip}")
         
         # Check if this is a champion
         champion_state_file = os.path.join(os.path.dirname(config_path), "reports", "champion_state.json")

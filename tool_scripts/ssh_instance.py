@@ -110,6 +110,7 @@ def main():
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=10",
+            "-o", "LogLevel=ERROR",
             f"ec2-user@{public_ip}"
         ]
         

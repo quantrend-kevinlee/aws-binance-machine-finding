@@ -49,8 +49,16 @@ class JSONLLogger:
                 jsonl_entry["domains"][domain] = {
                     "median": round(stats["best_median"], 2),
                     "best": round(stats["best_best"], 2),
+                    "average": round(stats.get("best_average", float("inf")), 2),
+                    "p1": round(stats.get("best_p1", float("inf")), 2),
+                    "p99": round(stats.get("best_p99", float("inf")), 2),
+                    "max": round(stats.get("best_max", float("inf")), 2),
                     "median_ip": stats["best_median_ip"],
-                    "best_ip": stats["best_best_ip"]
+                    "best_ip": stats["best_best_ip"],
+                    "average_ip": stats.get("best_average_ip", ""),
+                    "p1_ip": stats.get("best_p1_ip", ""),
+                    "p99_ip": stats.get("best_p99_ip", ""),
+                    "max_ip": stats.get("best_max_ip", "")
                 }
         
         # Append to JSONL file

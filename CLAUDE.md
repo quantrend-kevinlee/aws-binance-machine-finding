@@ -101,9 +101,7 @@ python3 tool_scripts/query_jsonl.py all
     "report_dir": "./reports",
     "network_init_wait_seconds": 30,  // Wait time after SSH ready before testing
     "timeout_per_domain_seconds": 30,  // Timeout per domain for latency tests
-    "min_timeout_seconds": 180,        // Minimum timeout regardless of domain count
-    "wait_for_status_checks": false,   // Wait for EC2 status checks (adds 3-5 min)
-    "check_status_before_test": true   // Check (but don't wait for) status checks
+    "min_timeout_seconds": 180         // Minimum timeout regardless of domain count
 }
 ```
 
@@ -188,7 +186,7 @@ python3 discover_ips.py --continuous
    - SSH to instance and deploy test script
    - Resolve all IPs for each Binance domain
    - Perform 1,000 TCP handshakes per IP
-   - Calculate median and best latencies
+   - Calculate comprehensive statistics: median, best (min), average, p1, p99, and max latencies
 
 3. **Champion Evaluation**
    - Compare median latency against current champions
@@ -334,69 +332,25 @@ AWS cluster placement groups provide lowest latency within a rack, but:
 ### Implementation
 
 - **Unique Names**: `dc-machine-cpg-{timestamp}` per instance
-- **Automatic Cleanup**: Background threads delete groups after instance termination
+- **Automatic Cleanup**: Background threads delete groups after instance termination (checks every 10 seconds)
 - **Graceful Shutdown**: Ctrl+C waits for cleanup completion
 
 ## Operational Notes
 
 ### Network Initialization and Latency Testing
 
-The system uses a **hybrid approach** to balance speed and accuracy:
+The system waits for instances to stabilize before running latency tests to ensure accurate measurements.
 
-#### 1. System Optimizations (Automatic)
-System optimizations are now applied automatically via EC2 user data when the instance boots:
-- CPU C-states disabled for consistent latency
-- CPU governor set to performance mode
-- IRQ balancing disabled
-- Network stack tuned for low latency
-- Tuned profile set to network-latency
+#### Instance Readiness Check
+After SSH is ready, the system waits (configurable via network_init_wait_seconds) for the instance to stabilize:
 
-Optimizations are logged to `/var/log/dc-machine-optimizer.log` and can be verified with:
-```bash
-python3 tool_scripts/check_optimizations.py <instance-id>
-```
-
-#### 2. EC2 Status Checks (Optional)
-- **check_status_before_test** (default: true): Checks current status without waiting
-- **wait_for_status_checks** (default: false): Waits for status checks to pass (adds 3-5 minutes)
-
-Status checks verify:
-- **System Status**: Hardware/infrastructure health
-- **Instance Status**: OS responds to ARP requests
-- Typically take 3.5-4.5 minutes to complete
-
-#### 3. Instance Readiness Check
-After SSH is ready, the system waits (configurable via network_init_wait_seconds) for the instance to be fully ready:
-
-1. **EC2 Status Checks**: Monitors system and instance health status
-2. **CPU Load Monitoring**: Ensures boot processes have completed
-3. **Network Verification**: Confirms network connectivity is working
-4. **Optimization Time**: Allows kernel parameters and user data scripts to take effect
-
-The wait will **terminate early** if:
-- ✅ EC2 status checks pass (both system and instance show 'ok')
-- ❌ EC2 status checks fail (either shows 'impaired') - instance is terminated
-
-This ensures:
-- Fast processing when instances are healthy
-- No time wasted on failed instances
-- Automatic termination and rotation to next instance type on failures
-
-Common causes of status check failures:
-- Hardware issues on the physical host (system impaired)
-- Kernel panics or boot failures (instance impaired)
-- Network configuration problems
-- Memory exhaustion or file system corruption
-
-The system displays:
-- CPU load average every 5 seconds
-- EC2 status check results every 15 seconds
-- Clear messages on pass/fail conditions
+1. **CPU Load Monitoring**: Displays CPU load average every 5 seconds
+2. **EC2 Status Checks**: Can exit early if EC2 status checks pass (3/3)
+3. **Network Verification**: Confirms basic network connectivity is working
 
 #### Recommended Settings
-- **Fast iteration** (default): `wait_for_status_checks: false, network_init_wait_seconds: 30`
-- **Maximum safety**: `wait_for_status_checks: true, network_init_wait_seconds: 30`
-- **Fastest testing**: `wait_for_status_checks: false, network_init_wait_seconds: 0` (not recommended)
+- **Default**: `network_init_wait_seconds: 30` - Allows instance to fully stabilize
+- **Fast testing**: `network_init_wait_seconds: 0` - Skip wait (not recommended for accurate results)
 
 ### SSH Access to Champions
 
@@ -413,17 +367,6 @@ aws ec2 associate-address \
   --instance-id i-03fa7ce9d925be452 \
   --allocation-id eipalloc-05500f18fa63990b6
 ssh -i ~/.ssh/dc-machine ec2-user@<EIP_ADDRESS>
-```
-
-#### Checking Optimization Status
-
-To verify if system optimizations were applied:
-```bash
-# Check optimization status on any instance
-python3 tool_scripts/check_optimizations.py i-03fa7ce9d925be452
-
-# Manually apply optimizations if needed (e.g., for older instances)
-python3 tool_scripts/run_optimizer.py i-03fa7ce9d925be452
 ```
 
 #### SSH Without Known Hosts Issues
@@ -478,8 +421,7 @@ Located in `tool_scripts/` directory:
 | `cleanup_orphaned_placement_groups.py` | Remove orphaned placement groups from terminated instances |
 | `bind_eip.py` | Bind Elastic IP to an instance by ID |
 | `ssh_instance.py` | SSH into instance by ID (auto-binds EIP) |
-| `check_optimizations.py` | Check if system optimizations are applied on instance |
-| `run_optimizer.py` | Manually apply system optimizations to instance |
+| `test_instance_latency.py` | Bind EIP and run latency test on a specific instance |
 | `terminate_all_champions.py` | Terminate all champion instances and clean up placement groups |
 
 ### Configuration Files
@@ -491,7 +433,7 @@ Located in `tool_scripts/` directory:
 | `reports/latency_log_*.jsonl` | Test results in JSONL format |
 | `reports/latency_log_*.txt` | Detailed test logs |
 | `reports/ip_lists/ip_list_latest.json` | Latest discovered IP addresses |
-| `reports/ip_lists/ip_list_*.json` | Historical IP snapshots |
+| `reports/ip_lists/ip_list_dead.jsonl` | Historical dead IP records (append-only) |
 
 ## Troubleshooting
 
@@ -544,5 +486,5 @@ Located in `tool_scripts/` directory:
 7. **Asynchronous Cleanup**: Non-blocking resource management
 8. **Dynamic Test Timeout**: Scales with number of domains (configurable via timeout_per_domain_seconds and min_timeout_seconds)
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
-10. **Network Initialization Wait**: Configurable wait after SSH ensures accurate latency measurements by allowing CPU, network stack, and ARP cache to stabilize
+10. **Network Initialization Wait**: Configurable wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
 11. **Auto-Naming**: Instances automatically renamed to reflect their champion/anchor status for easy identification

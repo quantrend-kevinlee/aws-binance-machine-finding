@@ -14,7 +14,6 @@ import argparse
 import sys
 import time
 import signal
-from datetime import datetime
 
 from core.config import Config
 from core.ip_discovery import IPCollector, IPValidator, IPPersistence
@@ -41,6 +40,7 @@ class IPDiscoveryTool:
         print(f"\n[INFO] Received signal {signum}, shutting down...")
         self.running = False
         self.collector.stop()
+        self.persistence.shutdown()
     
     def run_once(self):
         """Run a single discovery cycle."""
@@ -80,12 +80,12 @@ class IPDiscoveryTool:
                 if not is_alive:
                     dead_count += 1
         
-        # Remove dead IPs
+        # Move dead IPs to history
         if dead_count > 0:
-            removed = self.persistence.remove_dead_ips(ip_data)
+            moved = self.persistence.remove_dead_ips(ip_data, reason="validation_failed")
         
-        # Save updated IP data
-        self.persistence.save(ip_data, create_snapshot=True)
+        # Save updated IP data and sync to disk
+        self.persistence.save_and_sync(ip_data)
         
         # Print summary
         total_active = sum(len(self.persistence.get_domain_ips(ip_data, d)) for d in self.config.domains)
@@ -138,10 +138,12 @@ def main():
             tool.run_once()
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted by user")
-        sys.exit(0)
     except Exception as e:
         print(f"\n[ERROR] {e}")
         sys.exit(1)
+    finally:
+        # Ensure proper shutdown
+        tool.persistence.shutdown()
 
 
 if __name__ == "__main__":

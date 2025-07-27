@@ -3,7 +3,7 @@ from datetime import datetime
 
 # Domains must be provided via --domains argument or config.json
 
-ATTEMPTS = 2000
+ATTEMPTS = 1000
 WARMUP_ATTEMPTS = 100  # Warmup attempts to populate caches
 TIMEOUT = 1
 
@@ -78,14 +78,38 @@ def test_latency(ip, hostname):
     
     if not latencies:
         log_progress(f"    ERROR: No successful connections to {ip}")
-        return float("inf"), float("inf")
+        return {
+            "median": float("inf"),
+            "best": float("inf"),
+            "average": float("inf"),
+            "p1": float("inf"),
+            "p99": float("inf"),
+            "max": float("inf")
+        }
     
     success_rate = len(latencies) / ATTEMPTS * 100
     log_progress(f"    Success rate: {success_rate:.1f}% ({len(latencies)}/{ATTEMPTS} connections)")
     
-    median_us = statistics.median(latencies)
-    best_us = min(latencies)
-    return median_us, best_us
+    # Calculate all statistics
+    sorted_latencies = sorted(latencies)
+    n = len(sorted_latencies)
+    
+    # Calculate percentiles
+    p1_index = int(n * 0.01)
+    p99_index = int(n * 0.99)
+    if p99_index >= n:
+        p99_index = n - 1
+    
+    stats = {
+        "median": statistics.median(sorted_latencies),
+        "best": sorted_latencies[0],  # min
+        "average": statistics.mean(sorted_latencies),
+        "p1": sorted_latencies[p1_index],
+        "p99": sorted_latencies[p99_index],
+        "max": sorted_latencies[-1]  # max
+    }
+    
+    return stats
 
 def parse_ip_input(input_data):
     """Parse IP input data from JSON string, file path, or stdin.
@@ -208,16 +232,17 @@ def main():
         for ip_idx, ip in enumerate(ips, 1):
             log_progress(f"  [{ip_idx}/{len(ips)}] Testing {hostname} ({ip})...")
             try:
-                median_us, best_us = test_latency(ip, hostname)
-                results[hostname]["ips"][ip] = {
-                    "median": median_us,
-                    "best": best_us
-                }
+                stats = test_latency(ip, hostname)
+                results[hostname]["ips"][ip] = stats
             except Exception as e:
                 log_progress(f"    ERROR: Exception during latency test: {e}")
                 results[hostname]["ips"][ip] = {
                     "median": float("inf"),
                     "best": float("inf"),
+                    "average": float("inf"),
+                    "p1": float("inf"),
+                    "p99": float("inf"),
+                    "max": float("inf"),
                     "error": str(e)
                 }
         

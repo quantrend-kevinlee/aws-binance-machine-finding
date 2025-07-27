@@ -209,6 +209,7 @@ def main():
         "-i", key_path,
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
         f"ec2-user@{eip_address}",
         test_command
     ]
@@ -298,18 +299,28 @@ def main():
                 
                 print(f"  {domain}:")
                 
-                # Find best median and best single across all IPs
+                # Find best values across all IPs
                 best_median = float('inf')
                 best_single = float('inf')
+                best_avg = float('inf')
+                best_p99 = float('inf')
                 best_median_ip = None
                 best_single_ip = None
+                best_avg_ip = None
+                best_p99_ip = None
                 
                 # Sort IPs for consistent output
                 ips = sorted(data.get("ips", {}).items())
                 for ip, stats in ips:
-                    median = stats["median"]
-                    best = stats["best"]
-                    print(f"    IP {ip:<15} median={median:>8.2f} µs  best={best:>8.2f} µs")
+                    median = stats.get("median", float("inf"))
+                    best = stats.get("best", float("inf"))
+                    avg = stats.get("average", float("inf"))
+                    p1 = stats.get("p1", float("inf"))
+                    p99 = stats.get("p99", float("inf"))
+                    max_val = stats.get("max", float("inf"))
+                    
+                    print(f"    IP {ip:<15} median={median:>7.2f} avg={avg:>7.2f} "
+                          f"p1={p1:>7.2f} p99={p99:>7.2f} max={max_val:>7.2f} µs")
                     
                     # Track best values
                     if median < best_median:
@@ -318,6 +329,12 @@ def main():
                     if best < best_single:
                         best_single = best
                         best_single_ip = ip
+                    if avg < best_avg:
+                        best_avg = avg
+                        best_avg_ip = ip
+                    if p99 < best_p99:
+                        best_p99 = p99
+                        best_p99_ip = ip
                 
                 # Store summary data
                 summary_data[domain] = {
@@ -325,6 +342,10 @@ def main():
                     "best_median_ip": best_median_ip,
                     "best_single": best_single,
                     "best_single_ip": best_single_ip,
+                    "best_avg": best_avg,
+                    "best_avg_ip": best_avg_ip,
+                    "best_p99": best_p99,
+                    "best_p99_ip": best_p99_ip,
                     "passed": best_median <= median_threshold or best_single <= best_threshold
                 }
                 
@@ -333,13 +354,16 @@ def main():
             
             # Print summary at the bottom
             print("\nSummary - Best results per domain:")
-            print("-" * 80)
+            print("-" * 90)
             for domain, summary in summary_data.items():
                 abbrev = domain_abbrev.get(domain, domain[:10])
-                print(f"  {abbrev}: median={summary['best_median']:.2f}µs ({summary['best_median_ip']}), "
-                      f"best={summary['best_single']:.2f}µs ({summary['best_single_ip']})")
+                print(f"  {abbrev}:")
+                print(f"    Best median: {summary['best_median']:>7.2f}µs ({summary['best_median_ip']})")
+                print(f"    Best single: {summary['best_single']:>7.2f}µs ({summary['best_single_ip']})")
+                print(f"    Best avg:    {summary['best_avg']:>7.2f}µs ({summary['best_avg_ip']})")
+                print(f"    Best p99:    {summary['best_p99']:>7.2f}µs ({summary['best_p99_ip']})")
             print(f"\n  Instance Passed: {instance_passed}")
-            print("-" * 80)
+            print("-" * 90)
             
         except json.JSONDecodeError:
             print("\nRaw output:")

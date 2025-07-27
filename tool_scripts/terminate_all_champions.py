@@ -165,7 +165,7 @@ def main():
     if active_count > 0:
         print(f"\n{active_count} background cleanup task(s) running...")
         print("Waiting for all instances to terminate and placement groups to be deleted.")
-        print("This checks instance status every minute for up to 30 minutes per task.")
+        print("This checks instance status every 10 seconds for up to 30 minutes per task.")
         
         # Always wait for cleanup completion
         pg_manager.wait_for_cleanup_threads()

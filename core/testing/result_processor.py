@@ -38,14 +38,26 @@ class ResultProcessor:
             domain_stats[hostname] = {
                 "best_median": float("inf"),
                 "best_best": float("inf"),
+                "best_average": float("inf"),
+                "best_p1": float("inf"),
+                "best_p99": float("inf"),
+                "best_max": float("inf"),
                 "best_median_ip": "",
-                "best_best_ip": ""
+                "best_best_ip": "",
+                "best_average_ip": "",
+                "best_p1_ip": "",
+                "best_p99_ip": "",
+                "best_max_ip": ""
             }
             
             # Process each IP
             for ip, ip_data in host_data["ips"].items():
-                median = ip_data["median"]
-                best = ip_data["best"]
+                median = ip_data.get("median", float("inf"))
+                best = ip_data.get("best", float("inf"))
+                average = ip_data.get("average", float("inf"))
+                p1 = ip_data.get("p1", float("inf"))
+                p99 = ip_data.get("p99", float("inf"))
+                max_val = ip_data.get("max", float("inf"))
                 
                 # Check if this IP meets criteria
                 ip_passed = (median <= self.median_threshold) or (best <= self.best_threshold)
@@ -59,6 +71,26 @@ class ResultProcessor:
                 if best < domain_stats[hostname]["best_best"]:
                     domain_stats[hostname]["best_best"] = best
                     domain_stats[hostname]["best_best_ip"] = ip
+                    
+                # Track best average for this domain
+                if average < domain_stats[hostname]["best_average"]:
+                    domain_stats[hostname]["best_average"] = average
+                    domain_stats[hostname]["best_average_ip"] = ip
+                    
+                # Track best p1 for this domain
+                if p1 < domain_stats[hostname]["best_p1"]:
+                    domain_stats[hostname]["best_p1"] = p1
+                    domain_stats[hostname]["best_p1_ip"] = ip
+                    
+                # Track best p99 for this domain
+                if p99 < domain_stats[hostname]["best_p99"]:
+                    domain_stats[hostname]["best_p99"] = p99
+                    domain_stats[hostname]["best_p99_ip"] = ip
+                    
+                # Track best max for this domain
+                if max_val < domain_stats[hostname]["best_max"]:
+                    domain_stats[hostname]["best_max"] = max_val
+                    domain_stats[hostname]["best_max_ip"] = ip
                 
                 # Instance passes if ANY IP meets criteria
                 if ip_passed:

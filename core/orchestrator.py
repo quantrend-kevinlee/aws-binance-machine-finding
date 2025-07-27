@@ -1,12 +1,9 @@
 """Main orchestration logic for DC Machine."""
 
-import sys
 import time
 import datetime
 import os
 from typing import Optional, Dict, Any
-
-# No longer need to import DOMAINS from binance_latency_test
 
 from .config import Config
 from .aws import EC2Manager, PlacementGroupManager, EIPManager
@@ -109,15 +106,13 @@ class Orchestrator:
                     if not is_alive:
                         dead_count += 1
             
-            # Remove dead IPs
+            # Move dead IPs to history
             if dead_count > 0:
-                # Create snapshot before removing dead IPs (preserves historical record)
-                self.ip_persistence.save(self.ip_data, create_snapshot=True)
-                removed = self.ip_persistence.remove_dead_ips(self.ip_data)
-                print(f"[INFO] Removed {removed} dead IPs from active list")
+                moved = self.ip_persistence.remove_dead_ips(self.ip_data, reason="validation_failed")
+                print(f"[INFO] Moved {moved} dead IPs to dead history")
             
-            # Save updated IP data (without dead IPs)
-            self.ip_persistence.save(self.ip_data)
+            # Save updated IP data (without dead IPs) and sync to disk
+            self.ip_persistence.save_and_sync(self.ip_data)
         else:
             print("[WARN] No IPs found. Run 'python3 discover_ips.py' first")
         
@@ -148,7 +143,8 @@ class Orchestrator:
                     print(f"[IP Discovery] Skipped {ip} for {domain} (not reachable)")
             
             if alive_count > 0:
-                self.ip_persistence.save(self.ip_data)
+                # Save and sync new IPs to disk
+                self.ip_persistence.save_and_sync(self.ip_data)
                 # Update active IP list
                 self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
                 # Show actual total active IPs from persistence
@@ -285,44 +281,18 @@ class Orchestrator:
             time.sleep(2)
             return False
         
-        # Check or wait for EC2 status checks if configured
-        if self.config.check_status_before_test or self.config.wait_for_status_checks:
-            if self.config.wait_for_status_checks:
-                # Wait for status checks to pass (blocking)
-                if not self.ec2_manager.wait_for_status_checks(instance_id):
-                    print("[WARN] Proceeding despite status checks not passing")
-            else:
-                # Just check status without waiting (non-blocking)
-                self.ec2_manager.check_instance_status(instance_id)
-        
-        # Wait for instance to be fully ready for testing
-        # This ensures accurate latency measurements by:
-        # - Checking EC2 status (system and instance health)
-        # - Monitoring CPU load to ensure boot processes have settled
-        # - Verifying network connectivity
-        # - Allowing time for kernel optimizations to take effect
-        # Will terminate early if status checks fail (impaired)
+        # Wait for instance to be ready for testing
+        # This ensures the instance is stable by monitoring CPU load
+        # Can exit early if EC2 status checks pass (3/3)
         # Wait time is configurable via network_init_wait_seconds in config.json
-        instance_ready = self.ssh_client.wait_for_instance_ready(
+        self.ssh_client.wait_for_instance_ready(
             eip_address, 
             wait_time=self.config.network_init_wait_seconds,
             instance_id=instance_id,
             ec2_manager=self.ec2_manager
         )
         
-        # If status checks failed, terminate instance and try next
-        if not instance_ready:
-            print("[ERROR] Instance failed EC2 status checks. Terminating...")
-            self.ec2_manager.terminate_instance(instance_id)
-            self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
-            time.sleep(2)
-            return False
-        
-        # Reload latest IP data to include any newly discovered IPs
-        self.ip_data = self.ip_persistence.load_latest()
-        self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
-        
-        # Run latency test
+        # Run latency test with current IP list (already includes any newly discovered IPs)
         results = self.latency_runner.run_latency_test(eip_address, ip_list=self.ip_list)
         if not results:
             self.ec2_manager.terminate_instance(instance_id)
@@ -500,6 +470,10 @@ class Orchestrator:
         print("-> Stopping IP discovery...")
         self.ip_collector.stop()
         
+        # Sync IP data to disk
+        print("-> Syncing IP data to disk...")
+        self.ip_persistence.shutdown()
+        
         # Wait for cleanup threads
         self.pg_manager.wait_for_cleanup_threads()
     
@@ -522,6 +496,6 @@ class Orchestrator:
         active_count = self.pg_manager.get_active_cleanup_count()
         if active_count > 0:
             print(f"\n{active_count} background cleanup task(s) still running...")
-            print("These will check instance status every minute for up to 30 minutes.")
+            print("These will check instance status every 10 seconds for up to 30 minutes.")
             print("Placement groups will be deleted automatically when instances terminate.")
         time.sleep(2)
