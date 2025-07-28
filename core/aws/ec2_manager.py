@@ -130,6 +130,41 @@ class EC2Manager:
                 print(f"[WARN] Error describing instances: {e}")
         return instances
     
+    def get_instance_public_ip(self, instance_id: str) -> Optional[str]:
+        """Get the public IP address of an instance.
+        
+        Args:
+            instance_id: EC2 instance ID
+            
+        Returns:
+            Public IP address or None if not found
+        """
+        try:
+            response = self.client.describe_instances(InstanceIds=[instance_id])
+            if not response['Reservations'] or not response['Reservations'][0]['Instances']:
+                return None
+            
+            instance = response['Reservations'][0]['Instances'][0]
+            
+            # Check for public IP
+            public_ip = instance.get('PublicIpAddress')
+            if public_ip:
+                return public_ip
+            
+            # Check for associated EIP via network interface
+            network_interfaces = instance.get('NetworkInterfaces', [])
+            if network_interfaces:
+                association = network_interfaces[0].get('Association', {})
+                public_ip = association.get('PublicIp')
+                if public_ip:
+                    return public_ip
+            
+            return None
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to get instance public IP: {e}")
+            return None
+    
     def is_capacity_error(self, error_message: str) -> bool:
         """Check if error is a capacity issue.
         

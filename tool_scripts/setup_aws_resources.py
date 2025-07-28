@@ -259,27 +259,27 @@ def create_placement_group(ec2_client):
             print(f"   ✗ Error creating placement group: {e}")
             return None
 
-def allocate_eip(ec2_client):
-    """Allocate Elastic IP"""
-    print("\n8. Allocating Elastic IP...")
-    try:
-        eip_response = ec2_client.allocate_address(Domain='vpc')
-        allocation_id = eip_response['AllocationId']
-        public_ip = eip_response['PublicIp']
-        
-        print(f"   ✓ Allocated EIP: {public_ip}")
-        print(f"   Allocation ID: {allocation_id}")
-        
-        # Tag the EIP
-        ec2_client.create_tags(
-            Resources=[allocation_id],
-            Tags=[{'Key': 'Name', 'Value': f'{PROJECT_NAME}-eip'}]
-        )
-        
-        return allocation_id
-    except Exception as e:
-        print(f"   ✗ Error allocating EIP: {e}")
-        return None
+# def allocate_eip(ec2_client):
+#     """Allocate Elastic IP (DEPRECATED - no longer used for automatic EIP binding)"""
+#     print("\n8. Allocating Elastic IP...")
+#     try:
+#         eip_response = ec2_client.allocate_address(Domain='vpc')
+#         allocation_id = eip_response['AllocationId']
+#         public_ip = eip_response['PublicIp']
+#         
+#         print(f"   ✓ Allocated EIP: {public_ip}")
+#         print(f"   Allocation ID: {allocation_id}")
+#         
+#         # Tag the EIP
+#         ec2_client.create_tags(
+#             Resources=[allocation_id],
+#             Tags=[{'Key': 'Name', 'Value': f'{PROJECT_NAME}-eip'}]
+#         )
+#         
+#         return allocation_id
+#     except Exception as e:
+#         print(f"   ✗ Error allocating EIP: {e}")
+#         return None
 
 def save_config(config):
     """Save configuration to file"""
@@ -301,7 +301,6 @@ def generate_python_config(config):
     print(f'SECURITY_GROUP_ID = "{config["security_group_id"]}"')
     print(f'KEY_NAME = "{config["key_name"]}"')
     print(f'KEY_PATH = os.path.expanduser("~/.ssh/{config["key_name"]}.pem")')
-    print(f'EIP_ALLOC_ID = "{config["eip_allocation_id"]}"')
     print(f'PLACEMENT_GROUP_NAME = "{config["placement_group_name"]}"')
     
     print("\n" + "="*60)
@@ -370,11 +369,7 @@ def main():
         return 1
     config["placement_group_name"] = pg_name
     
-    # 8. Allocate EIP
-    eip_id = allocate_eip(ec2_client)
-    if not eip_id:
-        return 1
-    config["eip_allocation_id"] = eip_id
+    # EIP no longer required - instances use auto-assigned public IPs
     
     # Save configuration
     save_config(config)

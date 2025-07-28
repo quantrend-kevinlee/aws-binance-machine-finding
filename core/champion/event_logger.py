@@ -48,12 +48,11 @@ class ChampionEventLogger:
             f.write("-" * 80 + "\n")
     
     def format_champion_summary(self, champions: Dict[str, Any], 
-                               eip_allocation_id: str, key_path: str) -> str:
+                               key_path: str) -> str:
         """Format champion summary for display.
         
         Args:
             champions: Champion instances by domain
-            eip_allocation_id: EIP allocation ID
             key_path: SSH key path
             
         Returns:
@@ -102,9 +101,8 @@ class ChampionEventLogger:
         # Add access instructions
         lines.extend([
             f"\n   [INFO] Champion Access Instructions:",
-            f"   1. To SSH to any champion: aws ec2 associate-address "
-            f"--instance-id <INSTANCE_ID> --allocation-id {eip_allocation_id}",
-            f"   2. Then SSH to EIP address with key: {key_path}",
+            f"   1. To SSH to any champion: python3 tool_scripts/ssh_instance.py <INSTANCE_ID>",
+            f"   2. Or SSH directly to instance's public IP with key: {key_path}",
             f"   3. For production, use optimal IPs for each service:"
         ])
         

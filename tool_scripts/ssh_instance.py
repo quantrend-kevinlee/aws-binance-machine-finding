@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SSH into an EC2 instance by instance ID.
-Automatically binds EIP if needed and uses SSH options to avoid known_hosts issues.
+Uses the instance's existing public IP (auto-assigned or EIP).
 
 Usage: python3 ssh_instance.py <instance-id> [command]
 """
@@ -11,7 +11,6 @@ import sys
 import json
 import os
 import subprocess
-import time
 
 
 def load_config():
@@ -29,37 +28,34 @@ def load_config():
         sys.exit(1)
 
 
-def bind_eip_to_instance(ec2, instance_id, eip_allocation_id):
-    """Bind EIP to instance if not already bound"""
-    # Check current EIP association
-    eip_resp = ec2.describe_addresses(AllocationIds=[eip_allocation_id])
-    if not eip_resp['Addresses']:
-        print(f"Error: EIP allocation {eip_allocation_id} not found")
-        return None
-    
-    eip_info = eip_resp['Addresses'][0]
-    current_instance = eip_info.get('InstanceId')
-    public_ip = eip_info['PublicIp']
-    
-    if current_instance == instance_id:
-        print(f"EIP {public_ip} already associated with {instance_id}")
-        return public_ip
-    
-    if current_instance:
-        print(f"Disassociating EIP from {current_instance}...")
-        association_id = eip_info.get('AssociationId')
-        if association_id:
-            ec2.disassociate_address(AssociationId=association_id)
-            time.sleep(2)
-    
-    print(f"Associating EIP with {instance_id}...")
-    ec2.associate_address(
-        InstanceId=instance_id,
-        AllocationId=eip_allocation_id
-    )
-    time.sleep(2)
-    
-    return public_ip
+def get_instance_public_ip(ec2, instance_id):
+    """Get the public IP of an instance."""
+    try:
+        response = ec2.describe_instances(InstanceIds=[instance_id])
+        if not response['Reservations']:
+            return None, "Instance not found"
+        
+        instance = response['Reservations'][0]['Instances'][0]
+        
+        # Check instance state
+        state = instance['State']['Name']
+        if state != 'running':
+            return None, f"Instance is {state}, not running"
+        
+        # Get public IP
+        public_ip = instance.get('PublicIpAddress')
+        if not public_ip:
+            # Check if it has an associated EIP
+            if 'Association' in instance.get('NetworkInterfaces', [{}])[0]:
+                public_ip = instance['NetworkInterfaces'][0]['Association'].get('PublicIp')
+        
+        if not public_ip:
+            return None, "Instance has no public IP address"
+        
+        return public_ip, None
+        
+    except Exception as e:
+        return None, str(e)
 
 
 def main():
@@ -77,30 +73,17 @@ def main():
     # Load configuration
     config = load_config()
     region = config['region']
-    eip_allocation_id = config['eip_allocation_id']
     key_path = os.path.expanduser(config['key_path'])
     
     # Initialize EC2 client
     ec2 = boto3.client('ec2', region_name=region)
     
     try:
-        # Check instance status
-        instance_resp = ec2.describe_instances(InstanceIds=[instance_id])
-        if not instance_resp['Reservations']:
-            print(f"Error: Instance {instance_id} not found")
-            sys.exit(1)
+        # Get instance public IP
+        public_ip, error = get_instance_public_ip(ec2, instance_id)
         
-        instance = instance_resp['Reservations'][0]['Instances'][0]
-        state = instance['State']['Name']
-        
-        if state != 'running':
-            print(f"Error: Instance is in '{state}' state (must be 'running')")
-            sys.exit(1)
-        
-        # Bind EIP
-        public_ip = bind_eip_to_instance(ec2, instance_id, eip_allocation_id)
         if not public_ip:
-            print("Error: Failed to get public IP")
+            print(f"Error: {error}")
             sys.exit(1)
         
         # Build SSH command

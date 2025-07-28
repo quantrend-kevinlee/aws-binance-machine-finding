@@ -39,11 +39,11 @@ class LatencyTestRunner:
         with open(full_path, "r") as f:
             self._test_script = f.read()
     
-    def run_latency_test(self, eip_address: str, ip_list: Optional[Dict[str, list]] = None) -> Optional[Dict[str, Any]]:
+    def run_latency_test(self, public_ip: str, ip_list: Optional[Dict[str, list]] = None) -> Optional[Dict[str, Any]]:
         """Run latency test on instance and return results.
         
         Args:
-            eip_address: EIP address of instance
+            public_ip: Public IP address of instance
             ip_list: Optional dict of domain -> list of IPs to test
             
         Returns:
@@ -56,7 +56,7 @@ class LatencyTestRunner:
         print("Running latency test via SSH...")
         
         # Deploy test script
-        if not self.ssh_client.deploy_script(eip_address, self._test_script, "/tmp/latency_test.py"):
+        if not self.ssh_client.deploy_script(public_ip, self._test_script, "/tmp/latency_test.py"):
             return None
         
         # Build test command with domains
@@ -71,7 +71,7 @@ class LatencyTestRunner:
             # Deploy IP list as JSON file
             ip_list_json = json.dumps(ip_list)
             deploy_cmd = f"echo '{ip_list_json}' > /tmp/ip_list.json"
-            stdout, stderr, code = self.ssh_client.run_command(eip_address, deploy_cmd)
+            stdout, stderr, code = self.ssh_client.run_command(public_ip, deploy_cmd)
             if code != 0:
                 print(f"[ERROR] Failed to deploy IP list: {stderr}")
                 return None
@@ -91,7 +91,7 @@ class LatencyTestRunner:
         print("-" * 60)
         
         stdout, stderr, code = self.ssh_client.run_command_with_progress(
-            eip_address, 
+            public_ip, 
             test_command, 
             timeout=self.test_timeout
         )

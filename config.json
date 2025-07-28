@@ -18,9 +18,9 @@
     ],
     "instance_types": [
         "c8g.metal-24xl",
-        "c8g.medium",
+        "c8g.4xlarge",
         "c8g.24xlarge",
-        "c8g.8xlarge"
+        "c8g.4xlarge"
     ],
 
     "report_dir": "./reports",

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Bind EIP to an instance and run latency test.
+Run latency test on an instance using its public IP.
 
-This tool automates the process of:
-1. Binding the Elastic IP to a specified instance
-2. Deploying the binance_latency_test.py script
-3. Running the latency test
-4. Displaying formatted results
+This tool:
+1. Gets the instance's current public IP (auto-assigned or EIP)
+2. Deploys the binance_latency_test.py script
+3. Runs the latency test
+4. Displays formatted results
 
 Usage: python3 test_instance_latency.py <instance-id>
 """
@@ -16,6 +16,38 @@ import os
 import json
 import subprocess
 import socket
+import boto3
+
+def get_instance_public_ip(instance_id, region):
+    """Get the public IP of an instance."""
+    ec2 = boto3.client('ec2', region_name=region)
+    
+    try:
+        response = ec2.describe_instances(InstanceIds=[instance_id])
+        if not response['Reservations']:
+            return None, "Instance not found"
+        
+        instance = response['Reservations'][0]['Instances'][0]
+        
+        # Check instance state
+        state = instance['State']['Name']
+        if state != 'running':
+            return None, f"Instance is {state}, not running"
+        
+        # Get public IP
+        public_ip = instance.get('PublicIpAddress')
+        if not public_ip:
+            # Check if it has an associated EIP
+            if 'Association' in instance.get('NetworkInterfaces', [{}])[0]:
+                public_ip = instance['NetworkInterfaces'][0]['Association'].get('PublicIp')
+        
+        if not public_ip:
+            return None, "Instance has no public IP address"
+        
+        return public_ip, None
+        
+    except Exception as e:
+        return None, str(e)
 
 def main():
     if len(sys.argv) != 2:
@@ -24,46 +56,21 @@ def main():
     
     instance_id = sys.argv[1]
     
-    # First bind the EIP
-    print(f"Binding EIP to {instance_id}...")
-    bind_script = os.path.join(os.path.dirname(__file__), "bind_eip.py")
-    result = subprocess.run([sys.executable, bind_script, instance_id], capture_output=True, text=True)
-    
-    if result.returncode != 0:
-        print("Failed to bind EIP:")
-        print(result.stdout)
-        print(result.stderr)
-        sys.exit(1)
-    
-    # Extract IP from output
-    eip_address = None
-    for line in result.stdout.split('\n'):
-        if "Success! EIP" in line:
-            parts = line.split()
-            for i, part in enumerate(parts):
-                if part == "EIP" and i + 1 < len(parts):
-                    potential_ip = parts[i + 1]
-                    # Validate it's an IP address
-                    if '.' in potential_ip and potential_ip.count('.') == 3:
-                        try:
-                            # Basic IP validation
-                            octets = potential_ip.split('.')
-                            if all(0 <= int(octet) <= 255 for octet in octets):
-                                eip_address = potential_ip
-                                break
-                        except ValueError:
-                            pass
-    
-    if not eip_address:
-        print("Could not extract IP from bind_eip output")
-        sys.exit(1)
-    
-    print(f"EIP bound: {eip_address}")
-    
-    # Load config for key path
+    # Load config
     config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
+    
+    # Get instance public IP
+    print(f"Getting public IP for {instance_id}...")
+    public_ip, error = get_instance_public_ip(instance_id, config['region'])
+    
+    if not public_ip:
+        print(f"[ERROR] {error}")
+        sys.exit(1)
+    
+    print(f"Instance public IP: {public_ip}")
+    
     key_path = os.path.expanduser(config['key_path'])
     
     # Copy and run the latency test
@@ -78,7 +85,7 @@ def main():
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         test_script,
-        f"ec2-user@{eip_address}:~/"
+        f"ec2-user@{public_ip}:~/"
     ]
     
     result = subprocess.run(scp_cmd, capture_output=True, text=True)
@@ -135,7 +142,7 @@ def main():
                     "-o", "StrictHostKeyChecking=no",
                     "-o", "UserKnownHostsFile=/dev/null",
                     "/tmp/ip_list_deploy.json",
-                    f"ec2-user@{eip_address}:/tmp/ip_list.json"
+                    f"ec2-user@{public_ip}:/tmp/ip_list.json"
                 ]
                 result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
                 
@@ -188,7 +195,7 @@ def main():
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null",
                 "/tmp/ip_list_deploy.json",
-                f"ec2-user@{eip_address}:/tmp/ip_list.json"
+                f"ec2-user@{public_ip}:/tmp/ip_list.json"
             ]
             result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
             os.unlink('/tmp/ip_list_deploy.json')
@@ -210,7 +217,7 @@ def main():
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
-        f"ec2-user@{eip_address}",
+        f"ec2-user@{public_ip}",
         test_command
     ]
     
@@ -369,7 +376,7 @@ def main():
             print("\nRaw output:")
             print(full_stdout)
     
-    print(f"\nTest complete. Instance {instance_id} still has EIP {eip_address} bound.")
+    print(f"\nTest complete. Instance {instance_id} public IP: {public_ip}")
 
 if __name__ == "__main__":
     main()

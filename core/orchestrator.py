@@ -6,7 +6,7 @@ import os
 from typing import Optional, Dict, Any
 
 from .config import Config
-from .aws import EC2Manager, PlacementGroupManager, EIPManager
+from .aws import EC2Manager, PlacementGroupManager
 from .champion import ChampionStateManager, ChampionEvaluator, ChampionEventLogger
 from .testing import SSHClient, LatencyTestRunner, ResultProcessor
 from .logging import JSONLLogger, TextLogger
@@ -39,7 +39,6 @@ class Orchestrator:
         # Initialize AWS managers
         self.ec2_manager = EC2Manager(config)
         self.pg_manager = PlacementGroupManager(config)
-        self.eip_manager = EIPManager(config)
         
         # Initialize champion management
         champion_state_file = os.path.join(config.report_dir, "champion_state.json")
@@ -256,25 +255,21 @@ class Orchestrator:
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
             return False
         
-        # Associate EIP
-        if not self.eip_manager.associate_eip(instance_id):
+        # Check if instance has a public IP
+        public_ip = self.ec2_manager.get_instance_public_ip(instance_id)
+        
+        if not public_ip:
+            print("[ERROR] Instance has no public IP. Ensure subnet has auto-assign public IP enabled.")
             self.ec2_manager.terminate_instance(instance_id)
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
             time.sleep(2)
             return False
         
-        # Get EIP address
-        eip_address = self.eip_manager.get_eip_address()
-        if not eip_address:
-            self.ec2_manager.terminate_instance(instance_id)
-            self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
-            time.sleep(2)
-            return False
-        
-        print(f"[OK] EIP address: {eip_address}")
+        print(f"[OK] Instance has public IP: {public_ip}")
+        test_ip = public_ip
         
         # Wait for SSH
-        if not self.ssh_client.wait_for_ssh(eip_address):
+        if not self.ssh_client.wait_for_ssh(test_ip):
             print("[ERROR] SSH not available after timeout. Terminating instance...")
             self.ec2_manager.terminate_instance(instance_id)
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
@@ -286,14 +281,14 @@ class Orchestrator:
         # Can exit early if EC2 status checks pass (3/3)
         # Wait time is configurable via network_init_wait_seconds in config.json
         self.ssh_client.wait_for_instance_ready(
-            eip_address, 
+            test_ip, 
             wait_time=self.config.network_init_wait_seconds,
             instance_id=instance_id,
             ec2_manager=self.ec2_manager
         )
         
         # Run latency test with current IP list (already includes any newly discovered IPs)
-        results = self.latency_runner.run_latency_test(eip_address, ip_list=self.ip_list)
+        results = self.latency_runner.run_latency_test(test_ip, ip_list=self.ip_list)
         if not results:
             self.ec2_manager.terminate_instance(instance_id)
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
@@ -449,8 +444,7 @@ class Orchestrator:
         # Check if we have a current instance to handle
         if self._current_instance_id:
             if self._current_instance_id == self.anchor_instance_id:
-                print(f"-> Preserving anchor instance {self._current_instance_id} "
-                      f"(EIP will remain associated)")
+                print(f"-> Preserving anchor instance {self._current_instance_id}")
             elif self.champion_state_manager.is_instance_champion(self._current_instance_id):
                 domains = self.champion_state_manager.get_instance_domains(self._current_instance_id)
                 print(f"-> Preserving champion {self._current_instance_id} for: {', '.join(domains)}")
@@ -488,7 +482,7 @@ class Orchestrator:
         # Show champion summary
         champions = self.champion_state_manager.get_champions()
         summary = self.champion_event_logger.format_champion_summary(
-            champions, self.config.eip_allocation_id, self.config.key_path
+            champions, self.config.key_path
         )
         print(summary)
         

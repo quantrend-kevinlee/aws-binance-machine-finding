@@ -30,7 +30,7 @@ class Config:
             # Validate required fields
             required_fields = [
                 'region', 'availability_zone', 'subnet_id', 'security_group_id',
-                'key_name', 'key_path', 'eip_allocation_id', 'placement_group_base',
+                'key_name', 'key_path', 'placement_group_base',
                 'latency_thresholds', 'instance_types', 'report_dir'
             ]
             
@@ -79,10 +79,6 @@ class Config:
         """Path to SSH private key."""
         return self._data['key_path']
     
-    @property
-    def eip_allocation_id(self) -> str:
-        """Elastic IP allocation ID."""
-        return self._data['eip_allocation_id']
     
     @property
     def placement_group_base(self) -> str:

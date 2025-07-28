@@ -43,7 +43,7 @@ python3 tool_scripts/query_jsonl.py all
 2. **core/** - Modular architecture for maintainability
    - **config.py**: Configuration management with validation
    - **orchestrator.py**: Main loop coordination
-   - **aws/**: EC2, EIP, and placement group management
+   - **aws/**: EC2 and placement group management
    - **champion/**: Champion selection and persistence
    - **testing/**: SSH and latency test execution
    - **logging/**: JSONL and text format logging
@@ -66,7 +66,8 @@ python3 tool_scripts/query_jsonl.py all
 - **Availability Zone**: ap-northeast-1a (Binance location)
 - **Instance Types**: c8g.medium through c8g.4xlarge (ARM-based)
 - **Placement Groups**: Dynamic cluster groups per instance
-- **Elastic IP**: Single EIP reused across test instances
+- **Public IP Assignment**: Auto-assign enabled on subnet (instances get public IPs automatically)
+- **No Elastic IP Binding**: Instances use auto-assigned public IPs directly
 - **VPC Requirements**: DNS enabled (enableDnsSupport, enableDnsHostnames)
 
 ## Configuration
@@ -81,7 +82,6 @@ python3 tool_scripts/query_jsonl.py all
     "security_group_id": "sg-080dea8b90091be0b",
     "key_name": "dc-machine",
     "key_path": "~/.ssh/dc-machine",
-    "eip_allocation_id": "eipalloc-05500f18fa63990b6",
     "placement_group_base": "dc-machine-cpg",
     "latency_thresholds": {
         "median_us": 122,
@@ -104,6 +104,7 @@ python3 tool_scripts/query_jsonl.py all
     "min_timeout_seconds": 180         // Minimum timeout regardless of domain count
 }
 ```
+
 
 ### Binance Domains
 
@@ -180,7 +181,8 @@ python3 discover_ips.py --continuous
 1. **Instance Launch**
    - Create unique placement group (`dc-machine-cpg-{timestamp}`)
    - Launch instance with timestamp prefix (`{timestamp}-DC-Search`)
-   - Associate Elastic IP for SSH access
+   - Instance automatically gets public IP (subnet auto-assign enabled)
+   - Instance fails gracefully if no public IP (check subnet auto-assign setting)
 
 2. **Latency Testing**
    - SSH to instance and deploy test script
@@ -355,17 +357,17 @@ After SSH is ready, the system waits (configurable via network_init_wait_seconds
 ### SSH Access to Champions
 
 ```bash
-# Method 1: Using the convenient ssh_instance.py script
+# Method 1: Direct SSH if instance has public IP (auto-assigned)
+ssh -i ~/.ssh/dc-machine -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@<PUBLIC_IP>
+
+# Method 2: Using the convenient ssh_instance.py script (handles IP detection)
 python3 tool_scripts/ssh_instance.py i-03fa7ce9d925be452
 
-# Method 2: Using bind_eip.py then SSH manually
-python3 tool_scripts/bind_eip.py i-03fa7ce9d925be452
-ssh -i ~/.ssh/dc-machine -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@<EIP_ADDRESS>
-
-# Method 3: Using AWS CLI directly
+# Method 3: Manual EIP binding if needed (legacy approach)
+# Note: This requires manual EIP management outside the main workflow
 aws ec2 associate-address \
   --instance-id i-03fa7ce9d925be452 \
-  --allocation-id eipalloc-05500f18fa63990b6
+  --allocation-id <YOUR_EIP_ALLOCATION_ID>
 ssh -i ~/.ssh/dc-machine ec2-user@<EIP_ADDRESS>
 ```
 
@@ -376,7 +378,7 @@ The scripts use these SSH options to avoid host key verification issues:
 - `-o UserKnownHostsFile=/dev/null` - Don't save host keys
 - `-o ConnectTimeout=10` - Timeout after 10 seconds
 
-This is useful when the same EIP is reused across different instances.
+This is useful when testing different instances with temporary public IPs.
 
 ### Manual Cleanup
 
@@ -419,9 +421,10 @@ Located in `tool_scripts/` directory:
 | `check_vpc_dns.py` | Verify/fix VPC DNS settings |
 | `query_jsonl.py` | Analyze JSONL latency logs |
 | `cleanup_orphaned_placement_groups.py` | Remove orphaned placement groups from terminated instances |
-| `bind_eip.py` | Bind Elastic IP to an instance by ID |
-| `ssh_instance.py` | SSH into instance by ID (auto-binds EIP) |
-| `test_instance_latency.py` | Bind EIP and run latency test on a specific instance |
+| `ssh_instance.py` | SSH into instance by ID using its public IP |
+| `test_instance_latency.py` | Run latency test using instance's existing public IP |
+| `check_subnet_public_ip.py` | Check/configure subnet auto-assign public IP settings |
+| `launch_test_instance.py` | Launch test instance with public IP control |
 | `terminate_all_champions.py` | Terminate all champion instances and clean up placement groups |
 
 ### Configuration Files
@@ -446,7 +449,7 @@ Located in `tool_scripts/` directory:
 2. **SSH Connection Timeout**
    - Verify security group allows SSH (port 22)
    - Check instance is in "running" state
-   - Confirm EIP is associated correctly
+   - Confirm instance has a public IP (auto-assigned)
 
 3. **Insufficient Capacity Errors**
    - Script automatically tries next instance type
