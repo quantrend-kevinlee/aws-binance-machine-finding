@@ -64,7 +64,12 @@ class IPDiscoveryTool:
                 if not self.running:
                     break
                 pass  # Silent batch progress
-                time.sleep(self.collector.batch_interval)
+                
+                # Interruptible sleep - check self.running every second
+                for _ in range(self.collector.batch_interval):
+                    if not self.running:
+                        break
+                    time.sleep(1)
         finally:
             self.collector.stop()
         
