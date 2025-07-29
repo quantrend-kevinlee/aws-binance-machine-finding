@@ -28,6 +28,9 @@ python3 discover_ips.py
 # Start finding low-latency instances
 python3 find_instance.py
 
+# Test latency locally (for baseline comparison)
+python3 test_instance_latency.py
+
 # Query results
 python3 tool_scripts/query_jsonl.py all
 ```
@@ -49,10 +52,12 @@ python3 tool_scripts/query_jsonl.py all
    - **logging/**: JSONL and text format logging
    - **ip_discovery/**: Comprehensive IP discovery and validation
 
-3. **binance_latency_test.py** - Latency measurement script
-   - Runs on each EC2 instance
-   - Tests TCP handshake latency to Binance endpoints
-   - Returns JSON results for analysis
+3. **test_instance_latency.py** - User-facing latency testing tool
+   - Runs latency tests locally or on remote EC2 instances  
+   - Provides beautiful formatted output for easy analysis
+   - Automatically loads IP lists from `reports/ip_lists/ip_list_latest.json`
+   - Falls back to DNS resolution if no IP list available
+   - Supports both local baseline testing and remote instance testing
 
 4. **Multi-Domain Champion System**
    - Tracks best instance per Binance service domain
@@ -174,6 +179,12 @@ python3 discover_ips.py
 
 # Continuous mode for long-term collection
 python3 discover_ips.py --continuous
+
+# Run latency test locally with beautiful formatted output
+python3 test_instance_latency.py
+
+# Run latency test on remote instance
+python3 test_instance_latency.py i-1234567890abcdef0
 ```
 
 ## Testing Workflow
@@ -248,6 +259,40 @@ Domain abbreviations used in names:
   }
 }
 ```
+
+## Local Testing
+
+### Running Latency Tests Locally
+
+The system supports running latency tests locally for baseline comparisons and development:
+
+```bash
+# Run locally with beautiful formatted output (no instance ID needed)
+python3 test_instance_latency.py
+
+# Run on remote instance with beautiful formatted output
+python3 test_instance_latency.py i-1234567890abcdef0
+
+# Use test_instance_latency.py for both local and remote testing
+```
+
+### Benefits of Local Testing
+
+- **Baseline Comparison**: Compare local latency vs EC2 instances
+- **Development**: Test code changes without launching instances  
+- **Cost Savings**: No EC2 costs for initial testing
+- **IP List Validation**: Verify discovered IPs work correctly
+- **Network Troubleshooting**: Debug connectivity issues
+
+### Local vs Remote Results
+
+Local results typically show higher latency due to:
+- Different network path (home/office vs AWS datacenter)
+- Consumer internet vs enterprise backbone
+- Geographic distance to Binance servers
+- Local network congestion and routing
+
+Use local tests to validate functionality, not for production optimization.
 
 ## Data Analysis
 
@@ -408,7 +453,7 @@ python3 tool_scripts/cleanup_orphaned_placement_groups.py
 | Script | Purpose |
 |--------|---------|
 | `find_instance.py` | Main entry point - orchestrates the instance finding process |
-| `binance_latency_test.py` | Latency test executed on each instance |
+| `test_instance_latency.py` | Run latency tests locally or on remote instances with beautiful formatted output |
 | `discover_ips.py` | Standalone IP discovery and validation tool |
 
 ### Tool Scripts
@@ -422,7 +467,6 @@ Located in `tool_scripts/` directory:
 | `query_jsonl.py` | Analyze JSONL latency logs |
 | `cleanup_orphaned_placement_groups.py` | Remove orphaned placement groups from terminated instances |
 | `ssh_instance.py` | SSH into instance by ID using its public IP |
-| `test_instance_latency.py` | Run latency test using instance's existing public IP |
 | `check_subnet_public_ip.py` | Check/configure subnet auto-assign public IP settings |
 | `launch_test_instance.py` | Launch test instance with public IP control |
 | `terminate_all_champions.py` | Terminate all champion instances and clean up placement groups |
@@ -491,3 +535,7 @@ Located in `tool_scripts/` directory:
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
 10. **Network Initialization Wait**: Configurable wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
 11. **Auto-Naming**: Instances automatically renamed to reflect their champion/anchor status for easy identification
+12. **Automatic IP List Loading**: `test_instance_latency.py` auto-loads IP lists from default location for comprehensive testing
+13. **Local Testing Support**: `test_instance_latency.py` can run locally without instance ID for baseline comparisons
+14. **Clean Architecture**: Internal implementation organized in `core/`, user-facing scripts at root level
+15. **No EIP Dependency**: System relies entirely on subnet auto-assigned public IPs, eliminating EIP management overhead

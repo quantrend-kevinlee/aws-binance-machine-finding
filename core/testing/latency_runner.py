@@ -30,12 +30,12 @@ class LatencyTestRunner:
         self.test_timeout = max(self.min_timeout, self.timeout_per_domain * self.num_domains)
     
     def load_test_script(self, script_path: str = "binance_latency_test.py") -> None:
-        """Load the latency test script.
+        """Load the latency test script from core/testing directory.
         
         Args:
-            script_path: Path to test script file
+            script_path: Path to test script file (relative to this module)
         """
-        full_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), script_path)
+        full_path = os.path.join(os.path.dirname(__file__), script_path)
         with open(full_path, "r") as f:
             self._test_script = f.read()
     

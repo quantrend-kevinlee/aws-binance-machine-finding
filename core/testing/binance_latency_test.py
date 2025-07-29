@@ -1,7 +1,16 @@
+"""
+Internal latency testing script for DC Machine.
+
+This script performs TCP handshake latency measurements to Binance endpoints.
+It's designed to be deployed to EC2 instances or run locally, and outputs
+JSON results for programmatic analysis.
+
+Note: This is an internal script. Use test_instance_latency.py for user-facing
+latency testing with beautiful formatted output.
+"""
+
 import socket, statistics, time, sys, json, argparse, os
 from datetime import datetime
-
-# Domains must be provided via --domains argument or config.json
 
 ATTEMPTS = 1000
 WARMUP_ATTEMPTS = 100  # Warmup attempts to populate caches

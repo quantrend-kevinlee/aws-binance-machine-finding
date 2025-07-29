@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Run latency test on an instance using its public IP.
+Run latency test locally or on remote EC2 instances with beautiful formatted output.
 
 This tool:
-1. Gets the instance's current public IP (auto-assigned or EIP)
-2. Deploys the binance_latency_test.py script
-3. Runs the latency test
-4. Displays formatted results
+1. Automatically loads IP lists from discovered IPs for comprehensive testing
+2. Falls back to DNS resolution if no IP list available
+3. For remote: deploys test script and runs via SSH
+4. For local: runs test directly on this machine
+5. Displays beautiful formatted results with detailed statistics
 
-Usage: python3 test_instance_latency.py <instance-id>
+Usage: 
+  python3 test_instance_latency.py <instance-id>  # Run on remote EC2 instance
+  python3 test_instance_latency.py               # Run locally for baseline comparison
 """
 
 import sys
@@ -50,59 +53,68 @@ def get_instance_public_ip(instance_id, region):
         return None, str(e)
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python3 test_instance_latency.py <instance-id>")
+    if len(sys.argv) > 2:
+        print("Usage: python3 test_instance_latency.py [instance-id]")
+        print("  If no instance-id provided, runs latency test locally")
         sys.exit(1)
     
-    instance_id = sys.argv[1]
+    # Check if running locally or on remote instance
+    run_locally = len(sys.argv) == 1
+    instance_id = None if run_locally else sys.argv[1]
     
     # Load config
-    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
     
-    # Get instance public IP
-    print(f"Getting public IP for {instance_id}...")
-    public_ip, error = get_instance_public_ip(instance_id, config['region'])
+    if run_locally:
+        print("Running latency test locally...")
+        public_ip = None
+        key_path = None
+        test_script = os.path.join(os.path.dirname(__file__), "core", "testing", "binance_latency_test.py")
+    else:
+        # Get instance public IP
+        print(f"Getting public IP for {instance_id}...")
+        public_ip, error = get_instance_public_ip(instance_id, config['region'])
+        
+        if not public_ip:
+            print(f"[ERROR] {error}")
+            sys.exit(1)
+        
+        print(f"Instance public IP: {public_ip}")
+        
+        key_path = os.path.expanduser(config['key_path'])
+        
+        # Copy and run the latency test
+        test_script = os.path.join(os.path.dirname(__file__), "core", "testing", "binance_latency_test.py")
+        
+        print("\nDeploying and running latency test...")
+        
+        # SCP the file
+        scp_cmd = [
+            "scp",
+            "-i", key_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            test_script,
+            f"ec2-user@{public_ip}:~/"
+        ]
+        
+        result = subprocess.run(scp_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print("Failed to copy test script:")
+            print(result.stderr)
+            sys.exit(1)
     
-    if not public_ip:
-        print(f"[ERROR] {error}")
-        sys.exit(1)
-    
-    print(f"Instance public IP: {public_ip}")
-    
-    key_path = os.path.expanduser(config['key_path'])
-    
-    # Copy and run the latency test
-    test_script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "binance_latency_test.py")
-    
-    print("\nDeploying and running latency test...")
-    
-    # SCP the file
-    scp_cmd = [
-        "scp",
-        "-i", key_path,
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        test_script,
-        f"ec2-user@{public_ip}:~/"
-    ]
-    
-    result = subprocess.run(scp_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print("Failed to copy test script:")
-        print(result.stderr)
-        sys.exit(1)
-    
-    # Check if we have an IP list available
-    ip_list_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports", "ip_lists", "ip_list_latest.json")
+    # Load IP list for both local and remote execution
+    ip_list_file = os.path.join(os.path.dirname(__file__), "reports", "ip_lists", "ip_list_latest.json")
     ip_list_loaded = False
     
     if os.path.exists(ip_list_file):
         # Try to load IP list directly from file
         try:
             # Add parent directory to path for imports
-            parent_dir = os.path.dirname(os.path.dirname(__file__))
+            parent_dir = os.path.dirname(__file__)
             if parent_dir not in sys.path:
                 sys.path.insert(0, parent_dir)
             
@@ -129,34 +141,8 @@ def main():
                         ip_list[domain] = active_ips
             
             if ip_list:
-                # Deploy IP list to remote
-                ip_json = json.dumps(ip_list)
-                # Use a temporary file to avoid shell escaping issues
-                with open('/tmp/ip_list_deploy.json', 'w') as f:
-                    f.write(ip_json)
-                
-                # SCP the IP list file
-                scp_ip_cmd = [
-                    "scp",
-                    "-i", key_path,
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "/tmp/ip_list_deploy.json",
-                    f"ec2-user@{public_ip}:/tmp/ip_list.json"
-                ]
-                result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
-                
-                # Clean up temporary file
-                os.unlink('/tmp/ip_list_deploy.json')
-                
-                if result.returncode == 0:
-                    print(f"[INFO] Using discovered IP list for testing ({len(ip_list)} domains)")
-                    # Pass domains from config
-                    domains_args = " ".join(f'"{domain}"' for domain in config.get('domains', []))
-                    test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
-                    ip_list_loaded = True
-                else:
-                    print(f"[WARN] Failed to deploy IP list: {result.stderr}")
+                print(f"[INFO] Using discovered IP list for testing ({len(ip_list)} domains)")
+                ip_list_loaded = True
             else:
                 print("[INFO] No active IPs found in IP list")
                 
@@ -165,64 +151,83 @@ def main():
     else:
         print("[INFO] No IP list file found at expected location")
     
-    # If IP list wasn't loaded, we need to provide domains at minimum
+    # If IP list wasn't loaded, fall back to DNS resolution
     if not ip_list_loaded:
         print("[WARN] Running without pre-discovered IPs (DNS resolution only)")
-        # Create a minimal IP list by doing DNS resolution locally
         print("[INFO] Performing local DNS resolution for domains...")
         
-        minimal_ip_list = {}
+        ip_list = {}
         for domain in config.get('domains', []):
             try:
                 # Do DNS resolution
                 ips = socket.gethostbyname_ex(domain)[2]
                 if ips:
-                    minimal_ip_list[domain] = ips
+                    ip_list[domain] = ips
                     print(f"  - {domain}: {len(ips)} IPs resolved")
             except Exception as e:
                 print(f"  - {domain}: DNS resolution failed: {e}")
         
-        if minimal_ip_list:
-            # Deploy minimal IP list
-            ip_json = json.dumps(minimal_ip_list)
-            with open('/tmp/ip_list_deploy.json', 'w') as f:
-                f.write(ip_json)
-            
-            # SCP the IP list file
-            scp_ip_cmd = [
-                "scp",
-                "-i", key_path,
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "/tmp/ip_list_deploy.json",
-                f"ec2-user@{public_ip}:/tmp/ip_list.json"
-            ]
-            result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
-            os.unlink('/tmp/ip_list_deploy.json')
-            
-            if result.returncode == 0:
-                domains_args = " ".join(f'"{domain}"' for domain in config.get('domains', []))
-                test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
-            else:
-                print("[ERROR] Failed to deploy even minimal IP list")
-                sys.exit(1)
-        else:
+        if not ip_list:
             print("[ERROR] Could not resolve any domains")
+            sys.exit(1)
+
+    if run_locally:
+        # For local execution, create temporary IP list file
+        with open('/tmp/ip_list_local.json', 'w') as f:
+            json.dump(ip_list, f)
+        
+        domains_args = " ".join(config.get('domains', []))
+        test_command = f"python3 {test_script} --domains {domains_args} --ip-list /tmp/ip_list_local.json"
+        print(f"[INFO] Running locally: {test_command}")
+    else:
+        # For remote execution, deploy the IP list to the instance
+        # Use a temporary file to avoid shell escaping issues
+        with open('/tmp/ip_list_deploy.json', 'w') as f:
+            json.dump(ip_list, f)
+        
+        # SCP the IP list file
+        scp_ip_cmd = [
+            "scp",
+            "-i", key_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "/tmp/ip_list_deploy.json",
+            f"ec2-user@{public_ip}:/tmp/ip_list.json"
+        ]
+        result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
+        
+        # Clean up temporary file
+        os.unlink('/tmp/ip_list_deploy.json')
+        
+        if result.returncode == 0:
+            domains_args = " ".join(config.get('domains', []))
+            test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
+        else:
+            print(f"[ERROR] Failed to deploy IP list: {result.stderr}")
             sys.exit(1)
     
     # Run the test
-    ssh_cmd = [
-        "ssh",
-        "-i", key_path,
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        f"ec2-user@{public_ip}",
-        test_command
-    ]
-    
-    # Run with real-time output
-    process = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if run_locally:
+        # Run locally without SSH - build proper command args
+        cmd_args = [
+            "python3", test_script,
+            "--domains"
+        ] + config.get('domains', []) + [
+            "--ip-list", "/tmp/ip_list_local.json"
+        ]
+        process = subprocess.Popen(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    else:
+        # Run via SSH on remote instance
+        ssh_cmd = [
+            "ssh",
+            "-i", key_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            f"ec2-user@{public_ip}",
+            test_command
+        ]
+        process = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
     # Display stderr (progress) in real-time
     import select
@@ -268,21 +273,26 @@ def main():
             median_threshold = config['latency_thresholds']['median_us']
             best_threshold = config['latency_thresholds']['best_us']
             
-            # Get instance type from EC2
-            ec2 = subprocess.run([
-                'aws', 'ec2', 'describe-instances',
-                '--instance-ids', instance_id,
-                '--region', config['region'],
-                '--query', 'Reservations[0].Instances[0].InstanceType',
-                '--output', 'text'
-            ], capture_output=True, text=True)
-            instance_type = ec2.stdout.strip() if ec2.returncode == 0 else "unknown"
+            # Get instance type from EC2 (if running remotely)
+            if run_locally:
+                instance_type = "local"
+                display_id = "LOCAL"
+            else:
+                ec2 = subprocess.run([
+                    'aws', 'ec2', 'describe-instances',
+                    '--instance-ids', instance_id,
+                    '--region', config['region'],
+                    '--query', 'Reservations[0].Instances[0].InstanceType',
+                    '--output', 'text'
+                ], capture_output=True, text=True)
+                instance_type = ec2.stdout.strip() if ec2.returncode == 0 else "unknown"
+                display_id = instance_id
             
             # Format timestamp
             import datetime
             timestamp = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S%z')
             
-            print(f"\n[{timestamp}] {instance_id}  {instance_type:<9}")
+            print(f"\n[{timestamp}] {display_id}  {instance_type:<9}")
             
             # Print detailed results per domain and IP
             instance_passed = False
@@ -376,7 +386,14 @@ def main():
             print("\nRaw output:")
             print(full_stdout)
     
-    print(f"\nTest complete. Instance {instance_id} public IP: {public_ip}")
+    # Clean up temporary files
+    if run_locally and os.path.exists('/tmp/ip_list_local.json'):
+        os.unlink('/tmp/ip_list_local.json')
+    
+    if run_locally:
+        print(f"\nTest complete. Ran locally on this machine.")
+    else:
+        print(f"\nTest complete. Instance {instance_id} public IP: {public_ip}")
 
 if __name__ == "__main__":
     main()
