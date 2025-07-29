@@ -326,8 +326,9 @@ def main():
                 best_avg_ip = None
                 best_p99_ip = None
                 
-                # Sort IPs for consistent output
-                ips = sorted(data.get("ips", {}).items())
+                # Sort IPs by average latency (best/lowest first)
+                ips = sorted(data.get("ips", {}).items(), 
+                           key=lambda x: x[1].get("average", float("inf")))
                 for ip, stats in ips:
                     median = stats.get("median", float("inf"))
                     best = stats.get("best", float("inf"))
