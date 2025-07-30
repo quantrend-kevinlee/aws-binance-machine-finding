@@ -70,9 +70,11 @@ class Orchestrator:
         
         # Initialize IP discovery
         self.ip_persistence = IPPersistence(config.report_dir)
-        self.ip_collector = IPCollector(config.domains, queries_per_batch=3, batch_interval=60)
         self.ip_validator = IPValidator()
         self.ip_data = None
+        
+        # Note: ip_collector will be created in _initialize_ip_discovery with existing IPs
+        self.ip_collector = None
         self.ip_list = None
     
     def _update_log_files(self) -> None:
@@ -123,9 +125,18 @@ class Orchestrator:
             for domain, ips in self.ip_list.items():
                 print(f"  - {domain}: {len(ips)} active IPs")
         
+        # Extract existing IPs for the collector
+        existing_ips = {}
+        for domain in self.config.domains:
+            domain_data = self.ip_data.get("domains", {}).get(domain, {})
+            existing_ips[domain] = set(domain_data.get("ips", {}).keys())
+        
+        # Create collector with existing IPs
+        self.ip_collector = IPCollector(self.config.domains, existing_ips=existing_ips)
+        
         # Start background IP collection
         def on_new_ips(domain, new_ips):
-            """Callback for new IPs found."""
+            """Callback for new IPs found - validate and persist immediately."""
             print(f"[IP Discovery] Validating {len(new_ips)} new IPs for {domain}...")
             
             # Validate new IPs before adding
@@ -142,13 +153,13 @@ class Orchestrator:
                     print(f"[IP Discovery] Skipped {ip} for {domain} (not reachable)")
             
             if alive_count > 0:
-                # Save and sync new IPs to disk
+                # Save and sync new IPs to disk immediately
                 self.ip_persistence.save_and_sync(self.ip_data)
                 # Update active IP list
                 self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
                 # Show actual total active IPs from persistence
                 total_active = len(self.ip_list.get(domain, []))
-                print(f"[IP Discovery] Added {alive_count} new active IPs to {domain} (total active: {total_active})")
+                print(f"[IP Discovery] Persisted {alive_count} new active IPs for {domain} (total active: {total_active})")
         
         self.ip_collector.start(callback=on_new_ips)
         print("[OK] Background IP discovery started")
@@ -462,7 +473,8 @@ class Orchestrator:
         
         # Stop IP collector
         print("-> Stopping IP discovery...")
-        self.ip_collector.stop()
+        if self.ip_collector:
+            self.ip_collector.stop()
         
         # Sync IP data to disk
         print("-> Syncing IP data to disk...")

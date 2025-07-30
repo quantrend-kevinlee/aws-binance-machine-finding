@@ -12,7 +12,8 @@ class IPCollector:
     """Collects IPs through periodic DNS queries."""
     
     def __init__(self, domains: List[str], queries_per_batch: int = 5, 
-                 batch_interval: int = 60, dns_timeout: int = 10):
+                 batch_interval: int = 60, dns_timeout: int = 10,
+                 existing_ips: Optional[Dict[str, Set[str]]] = None):
         """Initialize IP collector.
         
         Args:
@@ -20,6 +21,7 @@ class IPCollector:
             queries_per_batch: Number of queries per domain in each batch
             batch_interval: Seconds to wait between batches (to bypass DNS cache)
             dns_timeout: Timeout for DNS queries in seconds
+            existing_ips: Optional dict of domain -> set of existing IPs to track
         """
         self.domains = domains
         self.queries_per_batch = queries_per_batch
@@ -27,7 +29,15 @@ class IPCollector:
         self.dns_timeout = dns_timeout
         self.running = False
         self.thread = None
-        self.collected_ips: Dict[str, Set[str]] = {domain: set() for domain in domains}
+        
+        # Initialize with existing IPs if provided
+        if existing_ips:
+            self.collected_ips: Dict[str, Set[str]] = {
+                domain: existing_ips.get(domain, set()).copy() for domain in domains
+            }
+        else:
+            self.collected_ips: Dict[str, Set[str]] = {domain: set() for domain in domains}
+            
         self.lock = threading.Lock()
     
     def resolve_domain(self, domain: str) -> List[str]:
@@ -75,8 +85,6 @@ class IPCollector:
         """
         new_ips = {domain: set() for domain in self.domains}
         
-        # Silently query DNS
-        
         for domain in self.domains:
             domain_new_ips = set()
             
@@ -91,15 +99,21 @@ class IPCollector:
             
             # Update collected IPs
             with self.lock:
-                before_count = len(self.collected_ips[domain])
-                self.collected_ips[domain].update(domain_new_ips)
-                after_count = len(self.collected_ips[domain])
+                # Find truly new IPs (not in our collected set)
+                truly_new = domain_new_ips - self.collected_ips[domain]
                 
-                # Track new IPs
-                new_count = after_count - before_count
-                if new_count > 0:
-                    new_ips[domain] = domain_new_ips - set(list(self.collected_ips[domain])[:before_count])
-                    print(f"[INFO] {domain}: +{new_count} IPs found in this batch (session total: {after_count})")
+                if truly_new:
+                    # Add new IPs to our collected set
+                    self.collected_ips[domain].update(truly_new)
+                    new_ips[domain] = truly_new
+                    
+                    # Log with clearer messaging
+                    total_known = len(self.collected_ips[domain])
+                    print(f"[INFO] {domain}: +{len(truly_new)} new IPs discovered (total known: {total_known})")
+                else:
+                    # Log when no new IPs found (optional, can be removed if too verbose)
+                    if domain_new_ips:  # Only log if we got IPs from DNS but all were known
+                        print(f"[INFO] {domain}: No new IPs (all {len(domain_new_ips)} returned IPs already known)")
         
         return new_ips
     
@@ -117,7 +131,6 @@ class IPCollector:
         self.thread = threading.Thread(target=self._collect_loop, args=(callback,))
         self.thread.daemon = True
         self.thread.start()
-        # Silently start collector
     
     def stop(self):
         """Stop collecting IPs."""

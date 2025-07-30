@@ -86,13 +86,19 @@ class IPPersistence:
             return
             
         # Count active IPs for logging
+        domain_counts = {}
         total_ips = 0
         active_ips = 0
-        for domain_data in self.active_data.get("domains", {}).values():
+        for domain_name, domain_data in self.active_data.get("domains", {}).items():
+            domain_active = 0
+            domain_total = 0
             for ip_info in domain_data.get("ips", {}).values():
+                domain_total += 1
                 total_ips += 1
                 if ip_info.get("alive", True):
+                    domain_active += 1
                     active_ips += 1
+            domain_counts[domain_name] = (domain_active, domain_total)
         
         # Atomic write: write to temp file then rename
         temp_fd, temp_path = tempfile.mkstemp(dir=self.ip_lists_dir, text=True)
@@ -103,10 +109,14 @@ class IPPersistence:
             os.replace(temp_path, self.latest_file)
             self.dirty = False
             
-            if active_ips < total_ips:
-                print(f"[IP Discovery] Saved {active_ips} active IPs ({total_ips - active_ips} dead) to {os.path.basename(self.latest_file)}")
-            else:
-                print(f"[IP Discovery] Saved {active_ips} active IPs to {os.path.basename(self.latest_file)}")
+            # More detailed logging
+            print(f"\n[IP Persistence] Saved to {os.path.basename(self.latest_file)}:")
+            for domain, (active, total) in sorted(domain_counts.items()):
+                if active < total:
+                    print(f"  - {domain}: {active}/{total} IPs (alive/total)")
+                else:
+                    print(f"  - {domain}: {active} IPs")
+            print(f"[IP Persistence] Total: {active_ips} active IPs across {len(domain_counts)} domains")
         except Exception as e:
             # Clean up temp file on error
             try:
