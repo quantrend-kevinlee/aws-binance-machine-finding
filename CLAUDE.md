@@ -294,6 +294,38 @@ Local results typically show higher latency due to:
 
 Use local tests to validate functionality, not for production optimization.
 
+## Utility Scripts
+
+### IP Verification
+
+The `test_ip_for_is_fstream.py` script verifies if an IP address belongs to fstream-mm.binance.com:
+
+```bash
+# Test if an IP serves fstream-mm.binance.com content
+python3 tool_scripts/test_ip_for_is_fstream.py 52.195.47.229
+```
+
+This is useful for:
+- Verifying discovered IPs are correct
+- Debugging connection issues
+- Confirming IP ownership before using in production
+
+### Auto-Assigned IP Refresh
+
+The `test_latency_with_new_auto_ip.py` script forces AWS to assign a new public IP:
+
+```bash
+# Refresh auto-assigned IP and test latency
+python3 tool_scripts/test_latency_with_new_auto_ip.py i-1234567890abcdef0
+```
+
+Use cases:
+- Testing if different auto-assigned IPs affect latency
+- Working around problematic auto-assigned IPs
+- Validating network path variations
+
+Note: Requires `eip_allocation_id` in config.json for temporary EIP binding.
+
 ## Data Analysis
 
 ### Query JSONL Logs
@@ -470,6 +502,8 @@ Located in `tool_scripts/` directory:
 | `check_subnet_public_ip.py` | Check/configure subnet auto-assign public IP settings |
 | `launch_test_instance.py` | Launch test instance with public IP control |
 | `terminate_all_champions.py` | Terminate all champion instances and clean up placement groups |
+| `test_ip_for_is_fstream.py` | Verify if an IP belongs to fstream-mm.binance.com by comparing WebSocket responses |
+| `test_latency_with_new_auto_ip.py` | Test instance latency after forcing AWS to assign a new auto-assigned public IP |
 
 ### Configuration Files
 
