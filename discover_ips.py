@@ -52,16 +52,16 @@ class IPDiscoveryTool:
         # Extract existing IPs for the collector
         existing_ips = {}
         total_existing = 0
-        for domain in self.config.domains:
+        for domain in self.config.discovery_domains:
             domain_data = self.ip_data.get("domains", {}).get(domain, {})
             existing_ips[domain] = set(domain_data.get("ips", {}).keys())
             total_existing += len(existing_ips[domain])
         
         if total_existing > 0:
-            print(f"[INFO] Loaded {total_existing} known IPs across {len(self.config.domains)} domains")
+            print(f"[INFO] Loaded {total_existing} known IPs across {len(self.config.discovery_domains)} domains")
         
         # Create collector with existing IPs
-        self.collector = IPCollector(self.config.domains, existing_ips=existing_ips)
+        self.collector = IPCollector(self.config.discovery_domains, existing_ips=existing_ips)
         
         # Track stats
         self.session_new_count = 0
@@ -153,7 +153,7 @@ class IPDiscoveryTool:
         
         # Current state
         tracked_total = 0
-        for domain in self.config.domains:
+        for domain in self.config.discovery_domains:
             domain_ips = len(self.persistence.get_domain_ips(self.ip_data, domain))
             tracked_total += domain_ips
             print(f"  - {domain}: {domain_ips} active IPs")

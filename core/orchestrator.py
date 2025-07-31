@@ -53,7 +53,7 @@ class Orchestrator:
         # Timeouts are configurable via timeout_per_domain_seconds and min_timeout_seconds
         self.latency_runner = LatencyTestRunner(
             self.ssh_client, 
-            domains=config.domains,
+            domains=config.latency_test_domains,
             timeout_per_domain=config.timeout_per_domain_seconds,
             min_timeout=config.min_timeout_seconds
         )
@@ -82,7 +82,7 @@ class Orchestrator:
     def _load_ip_list(self) -> None:
         """Load IP list from file with DNS fallback."""
         ip_list_file = os.path.join(self.config.ip_list_dir, "ip_list_latest.json")
-        self.ip_list = load_ip_list(ip_list_file, self.config.domains)
+        self.ip_list = load_ip_list(ip_list_file, self.config.latency_test_domains)
         
         if self.ip_list is None:
             print(f"[ERROR] Failed to load IPs from file or DNS")
@@ -226,10 +226,10 @@ class Orchestrator:
         # Wait for instance to be ready for testing
         # This ensures the instance is stable by monitoring CPU load
         # Can exit early if EC2 status checks pass (3/3)
-        # Wait time is configurable via network_init_wait_seconds in config.json
+        # Wait time is configurable via max_instance_init_wait_seconds in config.json
         self.ssh_client.wait_for_instance_ready(
             test_ip, 
-            wait_time=self.config.network_init_wait_seconds,
+            wait_time=self.config.max_instance_init_wait_seconds,
             instance_id=instance_id,
             ec2_manager=self.ec2_manager
         )
@@ -286,7 +286,7 @@ class Orchestrator:
         
         new_champions, replaced_instances = self.champion_evaluator.evaluate_new_champions(
             domain_stats, current_champions, instance_id, instance_type,
-            placement_group_name, self.config.domains
+            placement_group_name, self.config.latency_test_domains
         )
         
         if new_champions:

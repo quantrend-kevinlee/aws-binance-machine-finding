@@ -107,7 +107,7 @@ def main():
             sys.exit(1)
     
     # Load IP list for both local and remote execution
-    ip_list_dir = config.get('ip_list_dir', os.path.join(config.get('report_dir', './reports'), 'ip_lists'))
+    ip_list_dir = config['ip_list_dir']
     ip_list_file = os.path.join(ip_list_dir, "ip_list_latest.json")
     ip_list_loaded = False
     
@@ -122,7 +122,7 @@ def main():
             # Try using the core module
             try:
                 from core.ip_discovery import load_ip_list
-                ip_list = load_ip_list(ip_list_file, config.get('domains'))
+                ip_list = load_ip_list(ip_list_file, config['latency_test_domains'])
             except ImportError:
                 # Fallback: Load IP list directly from file
                 print("[INFO] Loading IP list directly from file")
@@ -153,7 +153,7 @@ def main():
         print("[INFO] Performing local DNS resolution for domains...")
         
         ip_list = {}
-        for domain in config.get('domains', []):
+        for domain in config['latency_test_domains']:
             try:
                 # Do DNS resolution
                 ips = socket.gethostbyname_ex(domain)[2]
@@ -172,7 +172,7 @@ def main():
         with open('/tmp/ip_list_local.json', 'w') as f:
             json.dump(ip_list, f)
         
-        domains_args = " ".join(config.get('domains', []))
+        domains_args = " ".join(config['latency_test_domains'])
         test_command = f"python3 {test_script} --domains {domains_args} --ip-list /tmp/ip_list_local.json"
         print(f"[INFO] Running locally: {test_command}")
     else:
@@ -196,7 +196,7 @@ def main():
         os.unlink('/tmp/ip_list_deploy.json')
         
         if result.returncode == 0:
-            domains_args = " ".join(config.get('domains', []))
+            domains_args = " ".join(config['latency_test_domains'])
             test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
         else:
             print(f"[ERROR] Failed to deploy IP list: {result.stderr}")
@@ -208,7 +208,7 @@ def main():
         cmd_args = [
             "python3", test_script,
             "--domains"
-        ] + config.get('domains', []) + [
+        ] + config['latency_test_domains'] + [
             "--ip-list", "/tmp/ip_list_local.json"
         ]
         process = subprocess.Popen(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

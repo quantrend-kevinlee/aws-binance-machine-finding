@@ -11,10 +11,18 @@
         "median_us": 120,
         "best_us": 100
     },
-    "domains": [
+    "latency_test_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",
         "fapi-mm.binance.com"
+    ],
+    "discovery_domains": [
+        "fstream-mm.binance.com",
+        "ws-fapi-mm.binance.com",
+        "fapi-mm.binance.com",
+        "stream.binance.com",
+        "ws-api.binance.com",
+        "api.binance.com"
     ],
     "instance_types": [
         "c8g.48xlarge",
@@ -29,7 +37,7 @@
     ],
     "report_dir": "./reports",
     "ip_list_dir": "./reports/ip_lists",
-    "network_init_wait_seconds": 600,
+    "max_instance_init_wait_seconds": 600,
     "timeout_per_domain_seconds": 120,
     "min_timeout_seconds": 180
 }

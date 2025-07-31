@@ -92,10 +92,18 @@ python3 tool_scripts/query_jsonl.py all
         "median_us": 122,
         "best_us": 102
     },
-    "domains": [
+    "latency_test_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",
         "fapi-mm.binance.com"
+    ],
+    "discovery_domains": [
+        "fstream-mm.binance.com",
+        "ws-fapi-mm.binance.com",
+        "fapi-mm.binance.com",
+        "stream.binance.com",
+        "ws-api.binance.com",
+        "api.binance.com"
     ],
     "instance_types": [
         "c8g.medium",
@@ -110,7 +118,7 @@ python3 tool_scripts/query_jsonl.py all
     ],
     "report_dir": "./reports",
     "ip_list_dir": "./reports/ip_lists",  // Directory for IP list files
-    "network_init_wait_seconds": 600,  // Wait time after SSH ready before testing
+    "max_instance_init_wait_seconds": 600,  // Maximum wait time after SSH ready before testing
     "timeout_per_domain_seconds": 120,  // Timeout per domain for latency tests
     "min_timeout_seconds": 180         // Minimum timeout regardless of domain count
 }
@@ -119,20 +127,27 @@ python3 tool_scripts/query_jsonl.py all
 
 ### Binance Domains
 
-Domains are now centrally configured in `config.json`:
+Domains are now centrally configured in `config.json` with separate lists for IP discovery and latency testing:
 
 ```json
-"domains": [
+"latency_test_domains": [
+    "fstream-mm.binance.com",  // Futures stream
+    "ws-fapi-mm.binance.com",  // WebSocket API  
+    "fapi-mm.binance.com"      // Futures REST API
+],
+"discovery_domains": [
     "fstream-mm.binance.com",  // Futures stream
     "ws-fapi-mm.binance.com",  // WebSocket API
-    "fapi-mm.binance.com"      // Futures REST API
+    "fapi-mm.binance.com",     // Futures REST API
+    "stream.binance.com",      // Spot stream
+    "ws-api.binance.com",      // Spot WebSocket API
+    "api.binance.com"          // Spot REST API
 ]
 ```
 
-Additional domains can be added as needed:
-- `"stream.binance.com"` - Spot stream
-- `"ws-api.binance.com"` - Spot WebSocket API
-- `"api.binance.com"` - Spot REST API
+**Purpose:**
+- `latency_test_domains`: Domains tested during instance evaluation for pass/fail criteria
+- `discovery_domains`: All domains for IP discovery (can include more domains than tested)
 
 ## IP Discovery System
 
@@ -169,7 +184,6 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
       "ips": {
         "54.65.8.148": {
           "first_seen": "2025-07-25T10:00:00+08:00",
-          "last_seen": "2025-07-25T10:30:00+08:00",
           "last_validated": "2025-07-25T10:30:00+08:00"
         }
       }
@@ -429,16 +443,16 @@ AWS cluster placement groups provide lowest latency within a rack, but:
 The system waits for instances to stabilize before running latency tests to ensure accurate measurements.
 
 #### Instance Readiness Check
-After SSH is ready, the system waits (configurable via network_init_wait_seconds) for the instance to stabilize:
+After SSH is ready, the system waits (configurable via max_instance_init_wait_seconds) for the instance to stabilize:
 
 1. **CPU Load Monitoring**: Displays CPU load average every 5 seconds
 2. **EC2 Status Checks**: Can exit early if EC2 status checks pass (3/3)
 3. **Network Verification**: Confirms basic network connectivity is working
 
 #### Recommended Settings
-- **Default**: `network_init_wait_seconds: 600` - Allows instance to fully stabilize (10 minutes)
-- **Fast testing**: `network_init_wait_seconds: 30` - Shorter wait for quick tests
-- **Skip wait**: `network_init_wait_seconds: 0` - Not recommended for accurate results
+- **Default**: `max_instance_init_wait_seconds: 600` - Allows instance to fully stabilize (10 minutes)
+- **Fast testing**: `max_instance_init_wait_seconds: 30` - Shorter wait for quick tests
+- **Skip wait**: `max_instance_init_wait_seconds: 0` - Not recommended for accurate results
 
 ### SSH Access to Champions
 
@@ -576,7 +590,7 @@ Located in `tool_scripts/` directory:
 7. **Asynchronous Cleanup**: Non-blocking resource management
 8. **Dynamic Test Timeout**: Scales with number of domains (configurable via timeout_per_domain_seconds and min_timeout_seconds)
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
-10. **Network Initialization Wait**: Configurable wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
+10. **Max Instance Initialization Wait**: Configurable maximum wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
 11. **Auto-Naming**: Instances automatically renamed to reflect their champion/anchor status for easy identification
 12. **Automatic IP List Loading**: `test_instance_latency.py` auto-loads IP lists from default location for comprehensive testing
 13. **Local Testing Support**: `test_instance_latency.py` can run locally without instance ID for baseline comparisons

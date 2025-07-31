@@ -24,14 +24,16 @@ class Config:
                 self._data = json.load(f)
                 
             # Expand user paths
-            if self._data.get('key_path', '').startswith('~'):
+            if 'key_path' in self._data and self._data['key_path'].startswith('~'):
                 self._data['key_path'] = os.path.expanduser(self._data['key_path'])
                 
             # Validate required fields
             required_fields = [
                 'region', 'availability_zone', 'subnet_id', 'security_group_id',
                 'key_name', 'key_path', 'placement_group_base',
-                'latency_thresholds', 'instance_types', 'report_dir'
+                'latency_thresholds', 'instance_types', 'report_dir',
+                'latency_test_domains', 'discovery_domains', 'ip_list_dir',
+                'max_instance_init_wait_seconds', 'timeout_per_domain_seconds', 'min_timeout_seconds'
             ]
             
             missing_fields = [field for field in required_fields if field not in self._data]
@@ -108,24 +110,29 @@ class Config:
     @property
     def ip_list_dir(self) -> str:
         """Directory for IP list files."""
-        return self._data.get('ip_list_dir', os.path.join(self.report_dir, 'ip_lists'))
+        return self._data['ip_list_dir']
     
     @property
-    def network_init_wait_seconds(self) -> int:
-        """Seconds to wait for network initialization after SSH is ready."""
-        return self._data.get('network_init_wait_seconds', 30)  # Default to 30 seconds
+    def max_instance_init_wait_seconds(self) -> int:
+        """Maximum seconds to wait for instance initialization after SSH is ready."""
+        return self._data['max_instance_init_wait_seconds']
     
     @property
     def timeout_per_domain_seconds(self) -> int:
         """Timeout per domain for latency testing."""
-        return self._data.get('timeout_per_domain_seconds', 30)  # Default to 30 seconds
+        return self._data['timeout_per_domain_seconds']
     
     @property
     def min_timeout_seconds(self) -> int:
         """Minimum timeout for latency testing regardless of domain count."""
-        return self._data.get('min_timeout_seconds', 180)  # Default to 180 seconds
+        return self._data['min_timeout_seconds']
     
     @property
-    def domains(self) -> List[str]:
-        """List of domains to test latency against."""
-        return self._data.get('domains', [])  # Default to empty list
+    def latency_test_domains(self) -> List[str]:
+        """List of domains to test latency against during instance testing."""
+        return self._data['latency_test_domains']
+    
+    @property
+    def discovery_domains(self) -> List[str]:
+        """List of domains for IP discovery (may include more domains than tested)."""
+        return self._data['discovery_domains']

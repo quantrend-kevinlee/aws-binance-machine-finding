@@ -179,12 +179,10 @@ class IPPersistence:
         # Get or create IP entry
         ip_entry = ip_data["domains"][domain]["ips"].get(ip, {
             "first_seen": now,
-            "last_seen": now,
             "last_validated": None
         })
         
         # Update fields
-        ip_entry["last_seen"] = now
         if validated:
             ip_entry["last_validated"] = now
         
@@ -219,12 +217,13 @@ class IPPersistence:
                         continue  # IP doesn't exist, skip
                         
                     ip_info = ips[ip]
-                    # Calculate alive duration
+                    # Calculate alive duration from first_seen to now
                     first_seen = ip_info.get("first_seen", now)
-                    last_seen = ip_info.get("last_seen", now)
+                    last_validated = ip_info.get("last_validated", now)
                     try:
                         first_dt = datetime.fromisoformat(first_seen)
-                        last_dt = datetime.fromisoformat(last_seen)
+                        # Use last_validated as the last known alive time
+                        last_dt = datetime.fromisoformat(last_validated)
                         duration_hours = (last_dt - first_dt).total_seconds() / 3600
                     except:
                         duration_hours = 0
@@ -232,8 +231,7 @@ class IPPersistence:
                     # Append to dead history
                     metadata = {
                         "first_seen": first_seen,
-                        "last_seen": last_seen,
-                        "died_at": now,
+                        "last_validated": last_validated,
                         "alive_duration_hours": round(duration_hours, 2),
                         "death_reason": reason
                     }
