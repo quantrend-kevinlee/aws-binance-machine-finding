@@ -11,7 +11,7 @@ from .champion import ChampionStateManager, ChampionEvaluator, ChampionEventLogg
 from .testing import SSHClient, LatencyTestRunner, ResultProcessor
 from .logging import JSONLLogger, TextLogger
 from .utils import get_current_timestamp, get_log_file_paths, ensure_directory_exists
-from .ip_discovery import IPCollector, IPValidator, IPPersistence
+from .ip_discovery import load_ip_list
 
 
 class Orchestrator:
@@ -68,13 +68,7 @@ class Orchestrator:
         # Track start date for daily rotation
         self.start_date = datetime.date.today()
         
-        # Initialize IP discovery
-        self.ip_persistence = IPPersistence(config.report_dir)
-        self.ip_validator = IPValidator()
-        self.ip_data = None
-        
-        # Note: ip_collector will be created in _initialize_ip_discovery with existing IPs
-        self.ip_collector = None
+        # IP list loaded from file
         self.ip_list = None
     
     def _update_log_files(self) -> None:
@@ -85,92 +79,34 @@ class Orchestrator:
         self.text_logger = TextLogger(text_file)
         self.champion_event_logger = ChampionEventLogger(champion_log_file)
     
-    def _initialize_ip_discovery(self) -> None:
-        """Initialize IP discovery and validate existing IPs."""
-        # Load existing IP data
-        self.ip_data = self.ip_persistence.load_latest()
-        existing_count = sum(len(d.get('ips', {})) for d in self.ip_data.get('domains', {}).values())
+    def _load_ip_list(self) -> None:
+        """Load IP list from file with DNS fallback."""
+        ip_list_file = os.path.join(self.config.ip_list_dir, "ip_list_latest.json")
+        self.ip_list = load_ip_list(ip_list_file, self.config.domains)
         
-        if existing_count > 0:
-            
-            # Get all active IPs for validation
-            all_active_ips = self.ip_persistence.get_all_active_ips(self.ip_data)
-            
-            # Validate IPs
-            validation_results = self.ip_validator.validate_domain_ips(all_active_ips, show_progress=True)
-            
-            # Update IP status based on validation
-            dead_count = 0
-            for domain, results in validation_results.items():
-                for ip, (is_alive, latency) in results.items():
-                    self.ip_persistence.update_ip(self.ip_data, domain, ip, alive=is_alive, validated=True)
-                    if not is_alive:
-                        dead_count += 1
-            
-            # Move dead IPs to history
-            if dead_count > 0:
-                moved = self.ip_persistence.remove_dead_ips(self.ip_data, reason="validation_failed")
-                print(f"[INFO] Moved {moved} dead IPs to dead history")
-            
-            # Save updated IP data (without dead IPs) and sync to disk
-            self.ip_persistence.save_and_sync(self.ip_data)
+        if self.ip_list is None:
+            print(f"[ERROR] Failed to load IPs from file or DNS")
+            print("[INFO] Run 'python3 discover_ips.py' for comprehensive IP discovery")
+            self.ip_list = {}
         else:
-            print("[WARN] No IPs found. Run 'python3 discover_ips.py' first")
+            # Report what we loaded
+            total_count = sum(len(ips) for ips in self.ip_list.values())
+            if total_count > 0:
+                print(f"[INFO] Loaded {total_count} IPs:")
+                for domain, ips in self.ip_list.items():
+                    print(f"  - {domain}: {len(ips)} IPs")
+            else:
+                print("[WARN] No IPs found")
+                self.ip_list = {}
         
-        # Get active IP list for testing
-        self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
-        active_count = sum(len(ips) for ips in self.ip_list.values())
-        if active_count > 0:
-            print(f"[INFO] Testing with {active_count} active IPs:")
-            for domain, ips in self.ip_list.items():
-                print(f"  - {domain}: {len(ips)} active IPs")
-        
-        # Extract existing IPs for the collector
-        existing_ips = {}
-        for domain in self.config.domains:
-            domain_data = self.ip_data.get("domains", {}).get(domain, {})
-            existing_ips[domain] = set(domain_data.get("ips", {}).keys())
-        
-        # Create collector with existing IPs
-        self.ip_collector = IPCollector(self.config.domains, existing_ips=existing_ips)
-        
-        # Start background IP collection
-        def on_new_ips(domain, new_ips):
-            """Callback for new IPs found - validate and persist immediately."""
-            print(f"[IP Discovery] Validating {len(new_ips)} new IPs for {domain}...")
-            
-            # Validate new IPs before adding
-            validation_results = self.ip_validator.validate_ips(list(new_ips), show_progress=False)
-            alive_count = 0
-            
-            for ip in new_ips:
-                is_alive, latency = validation_results.get(ip, (False, -1))
-                self.ip_persistence.update_ip(self.ip_data, domain, ip, alive=is_alive, validated=True)
-                if is_alive:
-                    alive_count += 1
-                    print(f"[IP Discovery] Added {ip} for {domain} (latency: {latency:.1f}ms)")
-                else:
-                    print(f"[IP Discovery] Skipped {ip} for {domain} (not reachable)")
-            
-            if alive_count > 0:
-                # Save and sync new IPs to disk immediately
-                self.ip_persistence.save_and_sync(self.ip_data)
-                # Update active IP list
-                self.ip_list = self.ip_persistence.get_all_active_ips(self.ip_data)
-                # Show actual total active IPs from persistence
-                total_active = len(self.ip_list.get(domain, []))
-                print(f"[IP Discovery] Persisted {alive_count} new active IPs for {domain} (total active: {total_active})")
-        
-        self.ip_collector.start(callback=on_new_ips)
-        print("[OK] Background IP discovery started")
         print("="*60 + "\n")
     
     def run(self) -> None:
         """Run the main orchestration loop."""
         print(f"Starting AWS instance search in AZ {self.config.availability_zone}...")
         
-        # Initialize IP discovery
-        self._initialize_ip_discovery()
+        # Load IP list from file
+        self._load_ip_list()
         
         try:
             while self.running:
@@ -470,15 +406,6 @@ class Orchestrator:
             # Placement group exists but no instance - clean up PG directly
             print(f"-> Deleting unused placement group {self._current_placement_group} ...")
             self.pg_manager.delete_placement_group(self._current_placement_group)
-        
-        # Stop IP collector
-        print("-> Stopping IP discovery...")
-        if self.ip_collector:
-            self.ip_collector.stop()
-        
-        # Sync IP data to disk
-        print("-> Syncing IP data to disk...")
-        self.ip_persistence.shutdown()
         
         # Wait for cleanup threads
         self.pg_manager.wait_for_cleanup_threads()

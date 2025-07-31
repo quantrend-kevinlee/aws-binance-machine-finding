@@ -107,7 +107,8 @@ def main():
             sys.exit(1)
     
     # Load IP list for both local and remote execution
-    ip_list_file = os.path.join(os.path.dirname(__file__), "reports", "ip_lists", "ip_list_latest.json")
+    ip_list_dir = config.get('ip_list_dir', os.path.join(config.get('report_dir', './reports'), 'ip_lists'))
+    ip_list_file = os.path.join(ip_list_dir, "ip_list_latest.json")
     ip_list_loaded = False
     
     if os.path.exists(ip_list_file):
@@ -120,25 +121,20 @@ def main():
             
             # Try using the core module
             try:
-                from core.ip_discovery import IPPersistence
-                persistence = IPPersistence(config['report_dir'])
-                ip_data = persistence.load_latest()
-                ip_list = persistence.get_all_active_ips(ip_data)
+                from core.ip_discovery import load_ip_list
+                ip_list = load_ip_list(ip_list_file, config.get('domains'))
             except ImportError:
                 # Fallback: Load IP list directly from file
                 print("[INFO] Loading IP list directly from file")
                 with open(ip_list_file, 'r') as f:
                     ip_data = json.load(f)
                 
-                # Extract IPs from the data structure
+                # Extract IPs from the data structure (all IPs are active)
                 ip_list = {}
                 for domain, domain_data in ip_data.get('domains', {}).items():
-                    active_ips = []
-                    for ip, ip_info in domain_data.get('ips', {}).items():
-                        if ip_info.get('alive', True):  # Default to True if not specified
-                            active_ips.append(ip)
-                    if active_ips:
-                        ip_list[domain] = active_ips
+                    ips = list(domain_data.get('ips', {}).keys())
+                    if ips:
+                        ip_list[domain] = ips
             
             if ip_list:
                 print(f"[INFO] Using discovered IP list for testing ({len(ip_list)} domains)")

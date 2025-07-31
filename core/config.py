@@ -106,6 +106,11 @@ class Config:
         return self._data['report_dir']
     
     @property
+    def ip_list_dir(self) -> str:
+        """Directory for IP list files."""
+        return self._data.get('ip_list_dir', os.path.join(self.report_dir, 'ip_lists'))
+    
+    @property
     def network_init_wait_seconds(self) -> int:
         """Seconds to wait for network initialization after SSH is ready."""
         return self._data.get('network_init_wait_seconds', 30)  # Default to 30 seconds

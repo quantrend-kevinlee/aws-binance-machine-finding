@@ -24,7 +24,7 @@ class IPDiscoveryTool:
     def __init__(self, config: Config):
         """Initialize IP discovery tool."""
         self.config = config
-        self.persistence = IPPersistence(config.report_dir)
+        self.persistence = IPPersistence(config.ip_list_dir)
         self.validator = IPValidator()
         self.running = True
         self.collector = None
@@ -112,24 +112,33 @@ class IPDiscoveryTool:
         all_active_ips = self.persistence.get_all_active_ips(self.ip_data)
         validation_results = self.validator.validate_domain_ips(all_active_ips, show_progress=False)
         
-        # Update IP status based on validation
-        dead_count = 0
+        # Track dead IPs and update validated status
+        dead_ips = {}
+        total_dead_count = 0
+        
         for domain, results in validation_results.items():
             alive_count = 0
-            domain_dead = 0
+            domain_dead_ips = set()
+            
             for ip, (is_alive, latency) in results.items():
-                self.persistence.update_ip(self.ip_data, domain, ip, alive=is_alive, validated=True)
                 if is_alive:
+                    # Update last validated time for alive IPs
+                    self.persistence.update_ip(self.ip_data, domain, ip, validated=True)
                     alive_count += 1
                 else:
-                    domain_dead += 1
-                    dead_count += 1
+                    # Track dead IPs
+                    domain_dead_ips.add(ip)
+                    total_dead_count += 1
             
-            print(f"  - {domain}: {alive_count} alive, {domain_dead} dead")
+            # Store dead IPs for this domain
+            if domain_dead_ips:
+                dead_ips[domain] = domain_dead_ips
+            
+            print(f"  - {domain}: {alive_count} alive, {len(domain_dead_ips)} dead")
         
         # Move dead IPs to history
-        if dead_count > 0:
-            moved = self.persistence.remove_dead_ips(self.ip_data, reason="validation_failed")
+        if total_dead_count > 0:
+            moved = self.persistence.remove_dead_ips(self.ip_data, dead_ips, reason="validation_failed")
             print(f"[INFO] Moved {moved} dead IPs to history")
         
         # Save updated IP data

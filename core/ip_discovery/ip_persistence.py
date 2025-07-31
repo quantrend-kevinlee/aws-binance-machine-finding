@@ -13,14 +13,13 @@ from ..utils import ensure_directory_exists
 class IPPersistence:
     """Manages loading and saving IP lists to disk."""
     
-    def __init__(self, report_dir: str):
+    def __init__(self, ip_list_dir: str):
         """Initialize IP persistence manager.
         
         Args:
-            report_dir: Base directory for reports
+            ip_list_dir: Directory for IP list files
         """
-        self.report_dir = report_dir
-        self.ip_lists_dir = os.path.join(report_dir, "ip_lists")
+        self.ip_lists_dir = ip_list_dir
         ensure_directory_exists(self.ip_lists_dir)
         self.latest_file = os.path.join(self.ip_lists_dir, "ip_list_latest.json")
         self.dead_file = os.path.join(self.ip_lists_dir, "ip_list_dead.jsonl")  # JSONL format
@@ -95,9 +94,8 @@ class IPPersistence:
             for ip_info in domain_data.get("ips", {}).values():
                 domain_total += 1
                 total_ips += 1
-                if ip_info.get("alive", True):
-                    domain_active += 1
-                    active_ips += 1
+                domain_active += 1
+                active_ips += 1
             domain_counts[domain_name] = (domain_active, domain_total)
         
         # Atomic write: write to temp file then rename
@@ -112,11 +110,8 @@ class IPPersistence:
             # More detailed logging
             print(f"\n[IP Persistence] Saved to {os.path.basename(self.latest_file)}:")
             for domain, (active, total) in sorted(domain_counts.items()):
-                if active < total:
-                    print(f"  - {domain}: {active}/{total} IPs (alive/total)")
-                else:
-                    print(f"  - {domain}: {active} IPs")
-            print(f"[IP Persistence] Total: {active_ips} active IPs across {len(domain_counts)} domains")
+                print(f"  - {domain}: {active} IPs")
+            print(f"[IP Persistence] Total: {active_ips} IPs across {len(domain_counts)} domains")
         except Exception as e:
             # Clean up temp file on error
             try:
@@ -162,14 +157,13 @@ class IPPersistence:
         return ip_data.get("domains", {}).get(domain, {}).get("ips", {})
     
     def update_ip(self, ip_data: Dict[str, Any], domain: str, ip: str, 
-                  alive: Optional[bool] = None, validated: bool = False) -> None:
+                  validated: bool = False) -> None:
         """Update IP metadata.
         
         Args:
             ip_data: IP data structure to update (can be external or internal)
             domain: Domain name
             ip: IP address
-            alive: Whether IP is alive (None to keep current)
             validated: Whether this is from a validation check
         """
         # Ensure structure exists
@@ -186,16 +180,13 @@ class IPPersistence:
         ip_entry = ip_data["domains"][domain]["ips"].get(ip, {
             "first_seen": now,
             "last_seen": now,
-            "last_validated": None,
-            "alive": True
+            "last_validated": None
         })
         
         # Update fields
         ip_entry["last_seen"] = now
         if validated:
             ip_entry["last_validated"] = now
-        if alive is not None:
-            ip_entry["alive"] = alive
         
         ip_data["domains"][domain]["ips"][ip] = ip_entry
         
@@ -203,11 +194,12 @@ class IPPersistence:
         if ip_data is self.active_data:
             self.dirty = True
     
-    def remove_dead_ips(self, ip_data: Dict[str, Any], reason: str = "validation_failed") -> int:
-        """Move IPs marked as dead to dead history and remove from active list.
+    def remove_dead_ips(self, ip_data: Dict[str, Any], dead_ips: Dict[str, Set[str]], reason: str = "validation_failed") -> int:
+        """Move specified dead IPs to dead history and remove from active list.
         
         Args:
             ip_data: IP data structure to update
+            dead_ips: Dictionary of domain -> set of dead IPs
             reason: Reason for IP death (default: "validation_failed")
             
         Returns:
@@ -219,10 +211,14 @@ class IPPersistence:
         with self.lock:
             for domain, domain_data in ip_data.get("domains", {}).items():
                 ips = domain_data.get("ips", {})
-                dead_ips = [(ip, data) for ip, data in ips.items() if not data.get("alive", True)]
+                domain_dead_ips = dead_ips.get(domain, set())
                 
                 # Move each dead IP to history
-                for ip, ip_info in dead_ips:
+                for ip in domain_dead_ips:
+                    if ip not in ips:
+                        continue  # IP doesn't exist, skip
+                        
+                    ip_info = ips[ip]
                     # Calculate alive duration
                     first_seen = ip_info.get("first_seen", now)
                     last_seen = ip_info.get("last_seen", now)
@@ -257,22 +253,19 @@ class IPPersistence:
         return moved
     
     def get_all_active_ips(self, ip_data: Dict[str, Any]) -> Dict[str, list]:
-        """Get all active IPs grouped by domain.
+        """Get all IPs grouped by domain (all IPs in the list are considered active).
         
         Args:
             ip_data: IP data structure
             
         Returns:
-            Dictionary of domain -> list of active IPs
+            Dictionary of domain -> list of IPs
         """
         result = {}
         for domain, domain_data in ip_data.get("domains", {}).items():
-            active_ips = [
-                ip for ip, data in domain_data.get("ips", {}).items()
-                if data.get("alive", True)
-            ]
-            if active_ips:
-                result[domain] = active_ips
+            ips = list(domain_data.get("ips", {}).keys())
+            if ips:
+                result[domain] = ips
         return result
     
     def shutdown(self) -> None:

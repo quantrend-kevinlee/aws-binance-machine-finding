@@ -8,8 +8,8 @@
     "eip_allocation_id": "eipalloc-05500f18fa63990b6",
     "placement_group_base": "dc-machine-cpg",
     "latency_thresholds": {
-        "median_us": 122,
-        "best_us": 102
+        "median_us": 120,
+        "best_us": 100
     },
     "domains": [
         "fstream-mm.binance.com",
@@ -17,13 +17,18 @@
         "fapi-mm.binance.com"
     ],
     "instance_types": [
-        "c8g.metal-24xl",
-        "c8g.4xlarge",
+        "c8g.48xlarge",
+        "c8g.medium",
+        "c8g.large",
+        "c8g.xlarge",
         "c8g.24xlarge",
-        "c8g.4xlarge"
+        "c8g.2xlarge",
+        "c8g.4xlarge",
+        "c8g.12xlarge",
+        "c8g.8xlarge"
     ],
-
     "report_dir": "./reports",
+    "ip_list_dir": "./reports/ip_lists",
     "network_init_wait_seconds": 600,
     "timeout_per_domain_seconds": 120,
     "min_timeout_seconds": 180

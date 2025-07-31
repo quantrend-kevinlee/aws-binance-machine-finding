@@ -50,7 +50,7 @@ python3 tool_scripts/query_jsonl.py all
    - **champion/**: Champion selection and persistence
    - **testing/**: SSH and latency test execution
    - **logging/**: JSONL and text format logging
-   - **ip_discovery/**: Comprehensive IP discovery and validation
+   - **ip_discovery/**: IP discovery, validation, and loading with DNS fallback
 
 3. **test_instance_latency.py** - User-facing latency testing tool
    - Runs latency tests locally or on remote EC2 instances  
@@ -69,7 +69,7 @@ python3 tool_scripts/query_jsonl.py all
 
 - **Region**: ap-northeast-1 (Tokyo)
 - **Availability Zone**: ap-northeast-1a (Binance location)
-- **Instance Types**: c8g.medium through c8g.4xlarge (ARM-based)
+- **Instance Types**: c8g.medium through c8g.48xlarge (ARM-based Graviton instances)
 - **Placement Groups**: Dynamic cluster groups per instance
 - **Public IP Assignment**: Auto-assign enabled on subnet (instances get public IPs automatically)
 - **No Elastic IP Binding**: Instances use auto-assigned public IPs directly
@@ -94,18 +94,24 @@ python3 tool_scripts/query_jsonl.py all
     },
     "domains": [
         "fstream-mm.binance.com",
-        "ws-fapi-mm.binance.com"
+        "ws-fapi-mm.binance.com",
+        "fapi-mm.binance.com"
     ],
     "instance_types": [
         "c8g.medium",
-        "c8g.large", 
+        "c8g.48xlarge",
+        "c8g.large",
         "c8g.xlarge",
         "c8g.2xlarge",
-        "c8g.4xlarge"
+        "c8g.4xlarge",
+        "c8g.8xlarge",
+        "c8g.12xlarge",
+        "c8g.24xlarge"
     ],
     "report_dir": "./reports",
-    "network_init_wait_seconds": 30,  // Wait time after SSH ready before testing
-    "timeout_per_domain_seconds": 30,  // Timeout per domain for latency tests
+    "ip_list_dir": "./reports/ip_lists",  // Directory for IP list files
+    "network_init_wait_seconds": 600,  // Wait time after SSH ready before testing
+    "timeout_per_domain_seconds": 120,  // Timeout per domain for latency tests
     "min_timeout_seconds": 180         // Minimum timeout regardless of domain count
 }
 ```
@@ -118,12 +124,12 @@ Domains are now centrally configured in `config.json`:
 ```json
 "domains": [
     "fstream-mm.binance.com",  // Futures stream
-    "ws-fapi-mm.binance.com"   // WebSocket API
+    "ws-fapi-mm.binance.com",  // WebSocket API
+    "fapi-mm.binance.com"      // Futures REST API
 ]
 ```
 
 Additional domains can be added as needed:
-- `"fapi-mm.binance.com"` - Futures REST API
 - `"stream.binance.com"` - Spot stream
 - `"ws-api.binance.com"` - Spot WebSocket API
 - `"api.binance.com"` - Spot REST API
@@ -139,16 +145,18 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
 
 ### How It Works
 
-1. **Continuous Discovery** (`discover_ips.py`):
+1. **Standalone Discovery** (`discover_ips.py`):
+   - Runs independently from instance testing
    - Queries each domain multiple times per batch
    - Waits 60 seconds between batches to bypass DNS cache
-   - Builds comprehensive IP list over time
    - Validates IP liveness with TCP connectivity tests
-   - Persists IP data to `reports/ip_lists/`
+   - Removes dead IPs automatically
+   - Persists live IPs to `reports/ip_lists/ip_list_latest.json`
 
 2. **Integration with Testing**:
-   - Orchestrator validates existing IPs on startup
-   - Background collection continues during instance testing
+   - `find_instance.py` reads IP list from file at startup
+   - Falls back to DNS resolution if no IP list exists (fresh repo)
+   - No background IP collection during instance testing
    - Test instances receive comprehensive IP list (not just DNS subset)
    - No local DNS resolution needed on test instances
 
@@ -162,8 +170,7 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
         "54.65.8.148": {
           "first_seen": "2025-07-25T10:00:00+08:00",
           "last_seen": "2025-07-25T10:30:00+08:00",
-          "last_validated": "2025-07-25T10:30:00+08:00",
-          "alive": true
+          "last_validated": "2025-07-25T10:30:00+08:00"
         }
       }
     }
@@ -171,14 +178,15 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
 }
 ```
 
+Note: All IPs in `ip_list_latest.json` are considered alive. Dead IPs are moved to `ip_list_dead.jsonl`.
+
 ### Usage
 
 ```bash
-# Standalone IP discovery (recommended before main run)
+# Run IP discovery separately (recommended before main run)
 python3 discover_ips.py
 
-# Continuous mode for long-term collection
-python3 discover_ips.py --continuous
+# Note: discover_ips.py runs continuously by default, use Ctrl+C to stop
 
 # Run latency test locally with beautiful formatted output
 python3 test_instance_latency.py
@@ -197,7 +205,7 @@ python3 test_instance_latency.py i-1234567890abcdef0
 
 2. **Latency Testing**
    - SSH to instance and deploy test script
-   - Resolve all IPs for each Binance domain
+   - Use pre-discovered IPs from `ip_list_latest.json`
    - Perform 1,000 TCP handshakes per IP
    - Calculate comprehensive statistics: median, best (min), average, p1, p99, and max latencies
 
@@ -428,8 +436,9 @@ After SSH is ready, the system waits (configurable via network_init_wait_seconds
 3. **Network Verification**: Confirms basic network connectivity is working
 
 #### Recommended Settings
-- **Default**: `network_init_wait_seconds: 30` - Allows instance to fully stabilize
-- **Fast testing**: `network_init_wait_seconds: 0` - Skip wait (not recommended for accurate results)
+- **Default**: `network_init_wait_seconds: 600` - Allows instance to fully stabilize (10 minutes)
+- **Fast testing**: `network_init_wait_seconds: 30` - Shorter wait for quick tests
+- **Skip wait**: `network_init_wait_seconds: 0` - Not recommended for accurate results
 
 ### SSH Access to Champions
 
@@ -486,7 +495,7 @@ python3 tool_scripts/cleanup_orphaned_placement_groups.py
 |--------|---------|
 | `find_instance.py` | Main entry point - orchestrates the instance finding process |
 | `test_instance_latency.py` | Run latency tests locally or on remote instances with beautiful formatted output |
-| `discover_ips.py` | Standalone IP discovery and validation tool |
+| `discover_ips.py` | Standalone IP discovery and validation tool (run separately from instance testing) |
 
 ### Tool Scripts
 
@@ -573,3 +582,4 @@ Located in `tool_scripts/` directory:
 13. **Local Testing Support**: `test_instance_latency.py` can run locally without instance ID for baseline comparisons
 14. **Clean Architecture**: Internal implementation organized in `core/`, user-facing scripts at root level
 15. **No EIP Dependency**: System relies entirely on subnet auto-assigned public IPs, eliminating EIP management overhead
+16. **Separated IP Discovery**: IP discovery runs as a standalone process (`discover_ips.py`), not during instance testing, for cleaner separation of concerns
