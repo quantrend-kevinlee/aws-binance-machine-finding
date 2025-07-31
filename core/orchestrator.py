@@ -50,12 +50,13 @@ class Orchestrator:
         # Initialize testing components
         self.ssh_client = SSHClient(config.key_path)
         # Pass the number of domains and timeout configuration
-        # Timeouts are configurable via timeout_per_domain_seconds and min_timeout_seconds
+        # Timeouts scale with domain count (latency_test_timeout_scale_per_domain) 
+        # with a minimum floor (latency_test_timeout_floor)
         self.latency_runner = LatencyTestRunner(
             self.ssh_client, 
             domains=config.latency_test_domains,
-            timeout_per_domain=config.timeout_per_domain_seconds,
-            min_timeout=config.min_timeout_seconds
+            timeout_per_domain=config.latency_test_timeout_scale_per_domain,
+            min_timeout=config.latency_test_timeout_floor
         )
         self.latency_runner.load_test_script()
         self.result_processor = ResultProcessor(

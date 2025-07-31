@@ -86,7 +86,7 @@ class LatencyTestRunner:
         
         # Run the test script with progress display
         print(f"Executing latency tests (timeout: {self.test_timeout}s for {self.num_domains} domains)...")
-        print(f"Timeout configuration: {self.timeout_per_domain}s per domain, {self.min_timeout}s minimum")
+        print(f"Timeout configuration: {self.timeout_per_domain}s scale per domain, {self.min_timeout}s floor")
         print(f"Progress will be displayed below:")
         print("-" * 60)
         

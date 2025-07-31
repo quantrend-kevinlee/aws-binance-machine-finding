@@ -34,7 +34,7 @@ DEFAULT_SSH_RETRY_DELAY = 5
 
 # Latency test timeout calculation
 # The timeout scales with the number of domains being tested
-# Configurable via timeout_per_domain_seconds and min_timeout_seconds in config.json
+# Configurable via latency_test_timeout_scale_per_domain and latency_test_timeout_floor in config.json
 # This ensures adequate time for testing multiple IPs per domain
 
 # Thread cleanup settings

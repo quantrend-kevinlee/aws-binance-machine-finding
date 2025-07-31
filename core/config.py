@@ -33,7 +33,7 @@ class Config:
                 'key_name', 'key_path', 'placement_group_base',
                 'latency_thresholds', 'instance_types', 'report_dir',
                 'latency_test_domains', 'discovery_domains', 'ip_list_dir',
-                'max_instance_init_wait_seconds', 'timeout_per_domain_seconds', 'min_timeout_seconds'
+                'max_instance_init_wait_seconds', 'latency_test_timeout_scale_per_domain', 'latency_test_timeout_floor'
             ]
             
             missing_fields = [field for field in required_fields if field not in self._data]
@@ -118,14 +118,14 @@ class Config:
         return self._data['max_instance_init_wait_seconds']
     
     @property
-    def timeout_per_domain_seconds(self) -> int:
-        """Timeout per domain for latency testing."""
-        return self._data['timeout_per_domain_seconds']
+    def latency_test_timeout_scale_per_domain(self) -> int:
+        """Timeout scale factor per domain for latency testing (in seconds)."""
+        return self._data['latency_test_timeout_scale_per_domain']
     
     @property
-    def min_timeout_seconds(self) -> int:
-        """Minimum timeout for latency testing regardless of domain count."""
-        return self._data['min_timeout_seconds']
+    def latency_test_timeout_floor(self) -> int:
+        """Minimum timeout floor for latency testing regardless of domain count (in seconds)."""
+        return self._data['latency_test_timeout_floor']
     
     @property
     def latency_test_domains(self) -> List[str]:

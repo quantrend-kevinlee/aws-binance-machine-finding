@@ -119,8 +119,8 @@ python3 tool_scripts/query_jsonl.py all
     "report_dir": "./reports",
     "ip_list_dir": "./reports/ip_lists",  // Directory for IP list files
     "max_instance_init_wait_seconds": 600,  // Maximum wait time after SSH ready before testing
-    "timeout_per_domain_seconds": 120,  // Timeout per domain for latency tests
-    "min_timeout_seconds": 180         // Minimum timeout regardless of domain count
+    "latency_test_timeout_scale_per_domain": 120,  // Timeout scale factor per domain (seconds)
+    "latency_test_timeout_floor": 180         // Minimum timeout floor regardless of domain count (seconds)
 }
 ```
 
@@ -562,8 +562,8 @@ Located in `tool_scripts/` directory:
    - Check AWS console for instance status
 
 5. **Latency Test Timeouts**
-   - Test timeout scales with domain count (configurable via timeout_per_domain_seconds)
-   - Minimum timeout ensures tests complete (configurable via min_timeout_seconds)
+   - Test timeout scales with domain count (configurable via latency_test_timeout_scale_per_domain)
+   - Minimum timeout ensures tests complete (configurable via latency_test_timeout_floor)
    - Progress is now displayed in real-time on your terminal
    - Shows DNS resolution, test progress, and results for each IP
    - If timeout occurs, check the last displayed progress to identify slow domains
@@ -588,7 +588,7 @@ Located in `tool_scripts/` directory:
 5. **JSONL Format**: Flexible schema for future domain changes
 6. **UTC+8 Timezone**: Aligns with APAC trading hours
 7. **Asynchronous Cleanup**: Non-blocking resource management
-8. **Dynamic Test Timeout**: Scales with number of domains (configurable via timeout_per_domain_seconds and min_timeout_seconds)
+8. **Dynamic Test Timeout**: Scales with number of domains (configurable via latency_test_timeout_scale_per_domain) with a minimum floor (latency_test_timeout_floor)
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
 10. **Max Instance Initialization Wait**: Configurable maximum wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
 11. **Auto-Naming**: Instances automatically renamed to reflect their champion/anchor status for easy identification

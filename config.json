@@ -38,6 +38,6 @@
     "report_dir": "./reports",
     "ip_list_dir": "./reports/ip_lists",
     "max_instance_init_wait_seconds": 600,
-    "timeout_per_domain_seconds": 120,
-    "min_timeout_seconds": 180
+    "latency_test_timeout_scale_per_domain": 150,
+    "latency_test_timeout_floor": 180
 }
