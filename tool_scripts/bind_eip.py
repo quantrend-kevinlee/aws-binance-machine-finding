@@ -2,7 +2,7 @@
 """
 Bind Elastic IP to an EC2 instance and provide SSH command.
 
-Usage: python3 bind_eip.py <instance-id>
+Usage: python3 bind_eip.py <instance-id> <eip-allocation-id>
 """
 
 import boto3
@@ -27,17 +27,17 @@ def load_config():
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python3 bind_eip.py <instance-id>")
-        print("Example: python3 bind_eip.py i-0123456789abcdef0")
+    if len(sys.argv) != 3:
+        print("Usage: python3 bind_eip.py <instance-id> <eip-allocation-id>")
+        print("Example: python3 bind_eip.py i-0123456789abcdef0 eipalloc-05500f18fa63990b6")
         sys.exit(1)
     
     instance_id = sys.argv[1]
+    eip_allocation_id = sys.argv[2]
     
     # Load configuration
     config, config_path = load_config()
     region = config['region']
-    eip_allocation_id = config['eip_allocation_id']
     key_path = os.path.expanduser(config['key_path'])
     
     # Initialize EC2 client
@@ -115,22 +115,6 @@ def main():
         print(f"    ssh -i {key_path} ec2-user@{public_ip}")
         print(f"\n  SSH without host key checking (useful for dynamic IPs):")
         print(f"    ssh -i {key_path} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ec2-user@{public_ip}")
-        
-        # Check if this is a champion
-        champion_state_file = os.path.join(os.path.dirname(config_path), "reports", "champion_state.json")
-        if os.path.exists(champion_state_file):
-            with open(champion_state_file, 'r') as f:
-                champion_state = json.load(f)
-                champions = champion_state.get('champions', {})
-                champion_domains = []
-                for domain, info in champions.items():
-                    if info.get('instance_id') == instance_id:
-                        champion_domains.append(domain)
-                
-                if champion_domains:
-                    print(f"\n⭐ This is a CHAMPION instance for:")
-                    for domain in champion_domains:
-                        print(f"    - {domain}")
         
     except Exception as e:
         print(f"Error: {e}")

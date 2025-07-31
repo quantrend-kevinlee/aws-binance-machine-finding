@@ -1,12 +1,12 @@
 {
     "region": "ap-northeast-1",
     "availability_zone": "ap-northeast-1a",
-    "subnet_id": "subnet-07954f36129e8beb1",
-    "security_group_id": "sg-080dea8b90091be0b",
-    "key_name": "dc-machine",
-    "key_path": "~/.ssh/dc-machine",
-    "eip_allocation_id": "eipalloc-05500f18fa63990b6",
-    "placement_group_base": "dc-machine-cpg",
+    "subnet_id": "subnet-07e96b2f2e29caa75",
+    "security_group_id": "sg-0b4b44dc3cf47285e",
+    "key_name": "qtx",
+    "key_path": "~/.ssh/qtx.pem",
+    "binance_vip_whitelisted_eip_allocation_id": "eipalloc-05500f18fa63990b6",
+    "placement_group_base": "lightning-binance-location",
     "latency_thresholds": {
         "median_us": 120,
         "best_us": 100

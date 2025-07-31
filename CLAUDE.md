@@ -346,7 +346,27 @@ Use cases:
 - Working around problematic auto-assigned IPs
 - Validating network path variations
 
-Note: Requires `eip_allocation_id` in config.json for temporary EIP binding.
+Note: Uses `binance_vip_whitelisted_eip_allocation_id` from config.json for temporary EIP binding during the refresh process.
+
+### EIP Binding
+
+The `bind_eip.py` script allows you to bind any Elastic IP to an instance:
+
+```bash
+# Bind specific EIP to instance
+python3 tool_scripts/bind_eip.py <instance-id> <eip-allocation-id>
+python3 tool_scripts/bind_eip.py i-1234567890abcdef0 eipalloc-05500f18fa63990b6
+```
+
+This script:
+- Checks if the EIP is already associated with another instance
+- Disassociates it if needed before binding to the target instance
+- Provides SSH commands with the new EIP address
+
+Use cases:
+- Binding Binance VIP whitelisted IPs to champion instances
+- Moving EIPs between instances for testing
+- Getting ready-to-use SSH commands after EIP binding
 
 ## Data Analysis
 
@@ -463,8 +483,10 @@ ssh -i ~/.ssh/dc-machine -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/
 # Method 2: Using the convenient ssh_instance.py script (handles IP detection)
 python3 tool_scripts/ssh_instance.py i-03fa7ce9d925be452
 
-# Method 3: Manual EIP binding if needed (legacy approach)
-# Note: This requires manual EIP management outside the main workflow
+# Method 3: Using bind_eip.py script for EIP binding
+python3 tool_scripts/bind_eip.py i-03fa7ce9d925be452 eipalloc-05500f18fa63990b6
+
+# Method 4: Manual EIP binding (if needed)
 aws ec2 associate-address \
   --instance-id i-03fa7ce9d925be452 \
   --allocation-id <YOUR_EIP_ALLOCATION_ID>
@@ -527,6 +549,7 @@ Located in `tool_scripts/` directory:
 | `terminate_all_champions.py` | Terminate all champion instances and clean up placement groups |
 | `test_ip_for_is_fstream.py` | Verify if an IP belongs to fstream-mm.binance.com by comparing WebSocket responses |
 | `test_latency_with_new_auto_ip.py` | Test instance latency after forcing AWS to assign a new auto-assigned public IP |
+| `bind_eip.py` | Bind a specific Elastic IP to an instance and provide SSH commands |
 
 ### Configuration Files
 

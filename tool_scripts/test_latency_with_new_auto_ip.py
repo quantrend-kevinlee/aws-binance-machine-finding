@@ -50,7 +50,7 @@ def main():
     # Load configuration
     config, config_path = load_config()
     region = config['region']
-    eip_allocation_id = config['eip_allocation_id']
+    eip_allocation_id = config['binance_vip_whitelisted_eip_allocation_id']
     
     # Initialize EC2 client
     ec2 = boto3.client('ec2', region_name=region)
