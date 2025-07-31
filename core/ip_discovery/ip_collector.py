@@ -165,6 +165,7 @@ class IPCollector:
                 
                 # Wait for next batch (unless stopping)
                 if self.running:
+                    print(f"[INFO] Waiting {self.batch_interval}s for next DNS query batch...")
                     for i in range(self.batch_interval):
                         if not self.running:
                             break

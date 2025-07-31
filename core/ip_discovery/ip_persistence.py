@@ -41,9 +41,9 @@ class IPPersistence:
                     self.active_data = json.load(f)
             except (json.JSONDecodeError, IOError) as e:
                 print(f"[WARN] Failed to load IP list: {e}")
-                self.active_data = {"last_updated": None, "domains": {}}
+                self.active_data = {"last_updated": None, "last_validated": None, "domains": {}}
         else:
-            self.active_data = {"last_updated": None, "domains": {}}
+            self.active_data = {"last_updated": None, "last_validated": None, "domains": {}}
     
     def load_latest(self) -> Dict[str, Any]:
         """Get the current active IP data.
@@ -156,15 +156,13 @@ class IPPersistence:
         """
         return ip_data.get("domains", {}).get(domain, {}).get("ips", {})
     
-    def update_ip(self, ip_data: Dict[str, Any], domain: str, ip: str, 
-                  validated: bool = False) -> None:
-        """Update IP metadata.
+    def update_ip(self, ip_data: Dict[str, Any], domain: str, ip: str) -> None:
+        """Update IP metadata (for new IP discovery).
         
         Args:
             ip_data: IP data structure to update (can be external or internal)
             domain: Domain name
             ip: IP address
-            validated: Whether this is from a validation check
         """
         # Ensure structure exists
         if "domains" not in ip_data:
@@ -176,17 +174,24 @@ class IPPersistence:
         
         now = datetime.now(UTC_PLUS_8).isoformat()
         
-        # Get or create IP entry
+        # Get or create IP entry (only stores first_seen now)
         ip_entry = ip_data["domains"][domain]["ips"].get(ip, {
-            "first_seen": now,
-            "last_validated": None
+            "first_seen": now
         })
         
-        # Update fields
-        if validated:
-            ip_entry["last_validated"] = now
-        
         ip_data["domains"][domain]["ips"][ip] = ip_entry
+        
+        # If updating internal data, mark as dirty
+        if ip_data is self.active_data:
+            self.dirty = True
+    
+    def update_validation_timestamp(self, ip_data: Dict[str, Any]) -> None:
+        """Update the global validation timestamp.
+        
+        Args:
+            ip_data: IP data structure to update
+        """
+        ip_data["last_validated"] = datetime.now(UTC_PLUS_8).isoformat()
         
         # If updating internal data, mark as dirty
         if ip_data is self.active_data:
@@ -217,12 +222,12 @@ class IPPersistence:
                         continue  # IP doesn't exist, skip
                         
                     ip_info = ips[ip]
-                    # Calculate alive duration from first_seen to now
+                    # Calculate alive duration from first_seen to last global validation
                     first_seen = ip_info.get("first_seen", now)
-                    last_validated = ip_info.get("last_validated", now)
+                    last_validated = ip_data.get("last_validated", now)
                     try:
                         first_dt = datetime.fromisoformat(first_seen)
-                        # Use last_validated as the last known alive time
+                        # Use global last_validated as the last known alive time
                         last_dt = datetime.fromisoformat(last_validated)
                         duration_hours = (last_dt - first_dt).total_seconds() / 3600
                     except:

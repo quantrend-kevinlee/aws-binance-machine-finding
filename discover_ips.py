@@ -121,8 +121,6 @@ class IPDiscoveryTool:
             
             for ip, (is_alive, latency) in results.items():
                 if is_alive:
-                    # Update last validated time for alive IPs
-                    self.persistence.update_ip(self.ip_data, domain, ip, validated=True)
                     alive_count += 1
                 else:
                     # Track dead IPs
@@ -134,6 +132,9 @@ class IPDiscoveryTool:
                 dead_ips[domain] = domain_dead_ips
             
             print(f"  - {domain}: {alive_count} alive, {len(domain_dead_ips)} dead")
+        
+        # Update global validation timestamp for all alive IPs
+        self.persistence.update_validation_timestamp(self.ip_data)
         
         # Move dead IPs to history
         if total_dead_count > 0:
