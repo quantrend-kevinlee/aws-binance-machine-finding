@@ -1,4 +1,4 @@
-# DC Machine - AWS EC2 Low Latency Instance Finder
+# AWS EC2 Low Latency Instance Finder
 
 ## Overview
 
@@ -8,13 +8,17 @@ This project automatically finds AWS EC2 instances with the lowest network laten
 
 - **Discovery**: Find EC2 instances with ultra-low latency to Binance endpoints
 - **Optimization**: Identify optimal rack locations using dynamic placement groups
-- **Validation**: Find anchor instances that meet the specified latency criteria
+- **Validation**: Find qualified instances that meet the specified latency criteria
 
 ### Latency Targets
 
-An instance passes if ANY IP from the Binance domains meets:
-- Median TCP handshake latency ≤ 122 µs OR
-- Best single handshake latency ≤ 102 µs
+An instance qualifies if ANY IP from the Binance domains meets the configured thresholds:
+- Median TCP handshake latency ≤ `median_us` threshold OR
+- Best single handshake latency ≤ `best_us` threshold
+
+(Thresholds are configurable in `config.json` under `latency_thresholds`)
+
+The search continues indefinitely to find multiple qualified instances until manually stopped.
 
 ## Quick Start
 
@@ -206,7 +210,7 @@ python3 test_instance_latency.py i-1234567890abcdef0
 
 1. **Instance Launch**
    - Create unique placement group (`dc-machine-cpg-{timestamp}`)
-   - Launch instance with timestamp prefix (`{timestamp}-DC-Search`)
+   - Launch instance with search criteria prefix (`Search_{timestamp}_{median}/{best}`)
    - Instance automatically gets public IP (subnet auto-assign enabled)
    - Instance fails gracefully if no public IP (check subnet auto-assign setting)
 
@@ -217,9 +221,9 @@ python3 test_instance_latency.py i-1234567890abcdef0
    - Calculate comprehensive statistics: median, best (min), average, p1, p99, and max latencies
 
 3. **Instance Evaluation**
-   - Check if instance meets latency criteria (anchor instance)
+   - Check if instance meets latency criteria (qualified instance)
    - Terminate instances that don't meet criteria
-   - Preserve instances that meet criteria and stop search
+   - Preserve qualified instances and continue searching for more
 
 4. **Result Logging**
    - JSONL format for flexible schema (`latency_log_YYYY-MM-DD.jsonl`)
@@ -308,7 +312,7 @@ This script:
 - Provides SSH commands with the new EIP address
 
 Use cases:
-- Binding Binance VIP whitelisted IPs to anchor instances
+- Binding Binance VIP whitelisted IPs to qualified instances
 - Moving EIPs between instances for testing
 - Getting ready-to-use SSH commands after EIP binding
 
@@ -344,12 +348,12 @@ Example JSONL record:
 
 ## Production Deployment
 
-### Using Anchor Instance IPs
+### Using Qualified Instance IPs
 
-Configure your trading applications to use the optimal IPs from anchor instances that meet the latency criteria:
+Configure your trading applications to use the optimal IPs from qualified instances that meet the latency criteria:
 
 ```python
-# From anchor instance results
+# From qualified instance results
 fapi_ip = "3.114.17.148"      # fapi-mm.binance.com optimal IP
 ws_ip = "52.198.205.156"       # ws-fapi-mm.binance.com optimal IP
 stream_ip = "13.113.223.24"    # fstream-mm.binance.com optimal IP
@@ -373,16 +377,16 @@ stream_ip = "13.113.223.24"    # fstream-mm.binance.com optimal IP
 
 ### Production Checklist
 
-If **anchor instance found** (meets pass criteria):
-1. Note placement group name
+With **qualified instances found** (meet pass criteria):
+1. Note placement group names for each qualified instance
 2. Extract optimal IPs from results
-3. Launch production instances in SAME placement group
-4. Keep anchor running to maintain placement group
+3. Launch production instances in SAME placement groups as qualified instances
+4. Keep qualified instances running to maintain placement groups
 
-If **no anchor instance found**:
-1. Continue searching until anchor instance is found
+If **no qualified instances found yet**:
+1. Continue searching until qualified instances are found
 2. Instances that don't meet criteria are automatically terminated
-3. Only deploy production systems after finding anchor instances
+3. Deploy production systems using qualified instances when available
 
 ## Placement Group Strategy
 
@@ -417,7 +421,7 @@ After SSH is ready, the system waits (configurable via max_instance_init_wait_se
 - **Fast testing**: `max_instance_init_wait_seconds: 30` - Shorter wait for quick tests
 - **Skip wait**: `max_instance_init_wait_seconds: 0` - Not recommended for accurate results
 
-### SSH Access to Anchor Instances
+### SSH Access to Qualified Instances
 
 ```bash
 # Method 1: Direct SSH if instance has public IP (auto-assigned)
@@ -447,7 +451,7 @@ This is useful when testing different instances with temporary public IPs.
 
 ### Manual Cleanup
 
-Anchor instances are preserved when found. To remove:
+Qualified instances are preserved when found. To remove:
 ```bash
 # Terminate instance
 aws ec2 terminate-instances --instance-ids i-abc123
@@ -463,7 +467,7 @@ python3 tool_scripts/cleanup_orphaned_placement_groups.py
 
 - **Live Progress**: Console output shows real-time test results
 - **Historical Data**: Query JSONL logs for trends
-- **Instance Status**: Monitor console output for anchor instance discovery
+- **Instance Status**: Monitor console output for qualified instance discovery
 
 ## Scripts Reference
 
@@ -531,7 +535,7 @@ Located in `tool_scripts/` directory:
 
 - Run script during off-peak hours for consistent results
 - Allow script to test multiple placement groups (rack diversity)
-- Keep anchor instances running for production use
+- Keep qualified instances running for production use
 - Use Ctrl+C for graceful shutdown to ensure cleanup
 
 ## Development Notes
@@ -548,9 +552,10 @@ Located in `tool_scripts/` directory:
 8. **Dynamic Test Timeout**: Scales with number of domains (configurable via latency_test_timeout_scale_per_domain) with a minimum floor (latency_test_timeout_floor)
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
 10. **Max Instance Initialization Wait**: Configurable maximum wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
-11. **Auto-Naming**: Anchor instances automatically renamed to "DC-ANCHOR" for easy identification
+11. **Auto-Naming**: Qualified instances automatically renamed to "Qualified_{timestamp}_{median}/{best}" format for easy identification
 12. **Automatic IP List Loading**: `test_instance_latency.py` auto-loads IP lists from default location for comprehensive testing
 13. **Local Testing Support**: `test_instance_latency.py` can run locally without instance ID for baseline comparisons
 14. **Clean Architecture**: Internal implementation organized in `core/`, user-facing scripts at root level
 15. **No EIP Dependency**: System relies entirely on subnet auto-assigned public IPs, eliminating EIP management overhead
 16. **Separated IP Discovery**: IP discovery runs as a standalone process (`discover_ips.py`), not during instance testing, for cleaner separation of concerns
+17. **Continuous Search**: Search continues indefinitely to find multiple qualified instances rather than stopping after the first one

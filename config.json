@@ -14,7 +14,10 @@
     "latency_test_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",
-        "fapi-mm.binance.com"
+        "fapi-mm.binance.com",
+        "stream.binance.com",
+        "ws-api.binance.com",
+        "api.binance.com"
     ],
     "discovery_domains": [
         "fstream-mm.binance.com",
@@ -25,8 +28,8 @@
         "api.binance.com"
     ],
     "instance_types": [
-        "c8g.48xlarge",
         "c8g.medium",
+        "c8g.48xlarge",
         "c8g.large",
         "c8g.xlarge",
         "c8g.24xlarge",

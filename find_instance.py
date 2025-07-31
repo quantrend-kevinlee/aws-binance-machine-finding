@@ -2,9 +2,9 @@
 """
 Find AWS EC2 instances with low latency to Binance servers.
 
-This is the main entry point for DC Machine. It uses a modular architecture
+This is the main entry point for the latency finder. It uses a modular architecture
 to orchestrate the process of launching instances, testing latency, and
-finding anchor instances that meet the specified criteria.
+finding qualified instances that meet the specified criteria.
 """
 
 from core.config import Config

@@ -1,4 +1,4 @@
-"""Main orchestration logic for DC Machine."""
+"""Main orchestration logic for the latency finder."""
 
 import time
 import datetime
@@ -25,8 +25,7 @@ class Orchestrator:
         self.config = config
         self.running = True
         self.instance_index = 0
-        self.anchor_instance_id = None
-        self.anchor_instance_type = None
+        self.qualified_instances = []  # List of (instance_id, instance_type, placement_group) tuples
         
         # Track current instance for cleanup on Ctrl+C
         self._current_instance_id = None
@@ -131,7 +130,7 @@ class Orchestrator:
             return
         
         # Launch instance
-        instance_name = f"{unix_timestamp}-DC-Search"
+        instance_name = f"Search_{unix_timestamp}_{int(self.config.median_threshold_us)}/{int(self.config.best_threshold_us)}"
         print(f"Launching test instance of type {instance_type} ...")
         
         instance_id, error = self.ec2_manager.launch_instance(
@@ -160,9 +159,6 @@ class Orchestrator:
             # Instance failed somewhere in processing
             return
         
-        # Check if we found an anchor
-        if self.anchor_instance_id:
-            self.running = False
     
     def _handle_launch_error(self, error: str, placement_group_name: str) -> None:
         """Handle instance launch error."""
@@ -256,9 +252,9 @@ class Orchestrator:
             results, self.config.median_threshold_us, self.config.best_threshold_us
         )
         
-        # Check if this is an anchor instance
+        # Check if this is a qualified instance
         if instance_passed:
-            self._handle_anchor_instance(
+            self._handle_qualified_instance(
                 instance_id, instance_type, placement_group_name, domain_stats
             )
         else:
@@ -266,17 +262,18 @@ class Orchestrator:
         
         return True
     
-    def _handle_anchor_instance(self, instance_id: str, instance_type: str,
-                               placement_group_name: str, domain_stats: Dict[str, Any]) -> None:
-        """Handle finding an anchor instance."""
-        self.anchor_instance_id = instance_id
-        self.anchor_instance_type = instance_type
+    def _handle_qualified_instance(self, instance_id: str, instance_type: str,
+                                   placement_group_name: str, domain_stats: Dict[str, Any]) -> None:
+        """Handle finding a qualified instance."""
+        # Track this qualified instance
+        self.qualified_instances.append((instance_id, instance_type, placement_group_name))
         
-        # Update instance name to reflect it's an anchor
-        new_name = "DC-ANCHOR"
+        # Update instance name to reflect it's qualified with criteria
+        timestamp = int(time.time())
+        new_name = f"Qualified_{timestamp}_{int(self.config.median_threshold_us)}/{int(self.config.best_threshold_us)}"
         self.ec2_manager.update_instance_name(instance_id, new_name)
         
-        print(self.result_processor.format_anchor_report(
+        print(self.result_processor.format_qualified_report(
             instance_id, instance_type, placement_group_name,
             self.config.availability_zone, domain_stats
         ))
@@ -308,8 +305,10 @@ class Orchestrator:
         
         # Check if we have a current instance to handle
         if self._current_instance_id:
-            if self._current_instance_id == self.anchor_instance_id:
-                print(f"-> Preserving anchor instance {self._current_instance_id}")
+            # Check if current instance is a qualified instance
+            is_qualified = any(instance_id == self._current_instance_id for instance_id, _, _ in self.qualified_instances)
+            if is_qualified:
+                print(f"-> Preserving qualified instance {self._current_instance_id}")
             else:
                 print(f"-> Terminating pending instance {self._current_instance_id} ...")
                 self.ec2_manager.terminate_instance(self._current_instance_id)
@@ -327,11 +326,13 @@ class Orchestrator:
     
     def _show_final_summary(self) -> None:
         """Show final summary after loop ends."""
-        if self.anchor_instance_id:
-            print(f"Anchor instance is {self.anchor_instance_id} "
-                  f"({self.anchor_instance_type}). Keep it running for stage 3.")
+        if self.qualified_instances:
+            print(f"\nFound {len(self.qualified_instances)} qualified instance(s):")
+            for i, (instance_id, instance_type, placement_group) in enumerate(self.qualified_instances, 1):
+                print(f"  {i}. {instance_id} ({instance_type}) in {placement_group}")
+            print("\nKeep these instances running for production use.")
         else:
-            print("Search stopped without finding an anchor instance.")
+            print("Search stopped without finding any qualified instances.")
         
         # Show cleanup thread status
         active_count = self.pg_manager.get_active_cleanup_count()

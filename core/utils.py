@@ -1,4 +1,4 @@
-"""Shared utilities for DC Machine."""
+"""Shared utilities for the latency finder."""
 
 import os
 import datetime
