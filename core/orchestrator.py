@@ -3,11 +3,10 @@
 import time
 import datetime
 import os
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from .config import Config
 from .aws import EC2Manager, PlacementGroupManager
-from .champion import ChampionStateManager, ChampionEvaluator, ChampionEventLogger
 from .testing import SSHClient, LatencyTestRunner, ResultProcessor
 from .logging import JSONLLogger, TextLogger
 from .utils import get_current_timestamp, get_log_file_paths, ensure_directory_exists
@@ -40,13 +39,6 @@ class Orchestrator:
         self.ec2_manager = EC2Manager(config)
         self.pg_manager = PlacementGroupManager(config)
         
-        # Initialize champion management
-        champion_state_file = os.path.join(config.report_dir, "champion_state.json")
-        self.champion_state_manager = ChampionStateManager(
-            champion_state_file, self.ec2_manager, self.pg_manager
-        )
-        self.champion_evaluator = ChampionEvaluator()
-        
         # Initialize testing components
         self.ssh_client = SSHClient(config.key_path)
         # Pass the number of domains and timeout configuration
@@ -74,11 +66,10 @@ class Orchestrator:
     
     def _update_log_files(self) -> None:
         """Update log file paths for current date."""
-        jsonl_file, text_file, champion_log_file = get_log_file_paths(self.config.report_dir)
+        jsonl_file, text_file = get_log_file_paths(self.config.report_dir)
         
         self.jsonl_logger = JSONLLogger(jsonl_file)
         self.text_logger = TextLogger(text_file)
-        self.champion_event_logger = ChampionEventLogger(champion_log_file)
     
     def _load_ip_list(self) -> None:
         """Load IP list from file with DNS fallback."""
@@ -265,11 +256,6 @@ class Orchestrator:
             results, self.config.median_threshold_us, self.config.best_threshold_us
         )
         
-        # Evaluate champions
-        self._evaluate_champions(
-            domain_stats, instance_id, instance_type, placement_group_name
-        )
-        
         # Check if this is an anchor instance
         if instance_passed:
             self._handle_anchor_instance(
@@ -280,63 +266,6 @@ class Orchestrator:
         
         return True
     
-    def _evaluate_champions(self, domain_stats: Dict[str, Any], instance_id: str,
-                           instance_type: str, placement_group_name: str) -> None:
-        """Evaluate and update champions."""
-        current_champions = self.champion_state_manager.get_champions()
-        
-        new_champions, replaced_instances = self.champion_evaluator.evaluate_new_champions(
-            domain_stats, current_champions, instance_id, instance_type,
-            placement_group_name, self.config.latency_test_domains
-        )
-        
-        if new_champions:
-            # Save new champions
-            self.champion_state_manager.save_champions(new_champions)
-            
-            # Log champion events
-            for domain, info in new_champions.items():
-                old_champion = self.champion_evaluator.prepare_old_champion_info(
-                    current_champions.get(domain, {}), instance_id
-                )
-                self.champion_event_logger.log_event(
-                    domain, instance_id, instance_type,
-                    info["median_latency"], info["best_latency"],
-                    info["ip"], placement_group_name, old_champion
-                )
-            
-            # Update instance name for the new champion
-            # Get all domains this instance now champions
-            instance_domains = self.champion_state_manager.get_instance_domains(instance_id)
-            if instance_domains:
-                new_name = self.champion_state_manager.generate_champion_name(instance_domains)
-                self.ec2_manager.update_instance_name(instance_id, new_name)
-            
-            # Handle replaced instances
-            all_champions = self.champion_state_manager.get_champions()
-            replaceable = self.champion_evaluator.get_replaceable_instances(
-                replaced_instances, all_champions
-            )
-            
-            for old_instance_id in replaceable:
-                self.ec2_manager.terminate_instance(old_instance_id)
-                # Find and schedule cleanup of its placement group
-                for info in all_champions.values():
-                    if info.get("instance_id") == old_instance_id:
-                        pg = info.get("placement_group")
-                        if pg:
-                            self.pg_manager.schedule_async_cleanup(old_instance_id, pg)
-                            break
-            
-            # Update names for any instances that lost champion status but still champion other domains
-            for old_instance_id in replaced_instances:
-                if old_instance_id not in replaceable:
-                    # This instance still champions some domains
-                    remaining_domains = self.champion_state_manager.get_instance_domains(old_instance_id)
-                    if remaining_domains:
-                        new_name = self.champion_state_manager.generate_champion_name(remaining_domains)
-                        self.ec2_manager.update_instance_name(old_instance_id, new_name)
-    
     def _handle_anchor_instance(self, instance_id: str, instance_type: str,
                                placement_group_name: str, domain_stats: Dict[str, Any]) -> None:
         """Handle finding an anchor instance."""
@@ -344,16 +273,7 @@ class Orchestrator:
         self.anchor_instance_type = instance_type
         
         # Update instance name to reflect it's an anchor
-        # Check if it's also a champion
-        champion_domains = self.champion_state_manager.get_instance_domains(instance_id)
-        if champion_domains:
-            # It's both anchor and champion
-            base_name = self.champion_state_manager.generate_champion_name(champion_domains)
-            new_name = f"{base_name}-ANCHOR"
-        else:
-            # Just an anchor
-            new_name = "DC-ANCHOR"
-        
+        new_name = "DC-ANCHOR"
         self.ec2_manager.update_instance_name(instance_id, new_name)
         
         print(self.result_processor.format_anchor_report(
@@ -363,18 +283,15 @@ class Orchestrator:
     
     def _handle_failed_instance(self, instance_id: str, placement_group_name: str) -> None:
         """Handle instance that didn't meet criteria."""
-        if self.champion_state_manager.is_instance_champion(instance_id):
-            # Champion is protected
-            pass
-        else:
-            print(f"Instance {instance_id} did not meet latency target. "
-                  f"Terminating and continuing...")
-            if self.ec2_manager.terminate_instance(instance_id):
-                print("  [OK] Instance termination initiated")
-            
-            # Schedule placement group deletion
-            print(f"Scheduling placement group {placement_group_name} for deletion...")
-            self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
+        print(f"Instance {instance_id} did not meet latency target. "
+              f"Terminating and continuing...")
+        
+        if self.ec2_manager.terminate_instance(instance_id):
+            print("  [OK] Instance termination initiated")
+        
+        # Schedule placement group deletion
+        print(f"Scheduling placement group {placement_group_name} for deletion...")
+        self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
         
         time.sleep(2)
     
@@ -393,9 +310,6 @@ class Orchestrator:
         if self._current_instance_id:
             if self._current_instance_id == self.anchor_instance_id:
                 print(f"-> Preserving anchor instance {self._current_instance_id}")
-            elif self.champion_state_manager.is_instance_champion(self._current_instance_id):
-                domains = self.champion_state_manager.get_instance_domains(self._current_instance_id)
-                print(f"-> Preserving champion {self._current_instance_id} for: {', '.join(domains)}")
             else:
                 print(f"-> Terminating pending instance {self._current_instance_id} ...")
                 self.ec2_manager.terminate_instance(self._current_instance_id)
@@ -418,13 +332,6 @@ class Orchestrator:
                   f"({self.anchor_instance_type}). Keep it running for stage 3.")
         else:
             print("Search stopped without finding an anchor instance.")
-        
-        # Show champion summary
-        champions = self.champion_state_manager.get_champions()
-        summary = self.champion_event_logger.format_champion_summary(
-            champions, self.config.key_path
-        )
-        print(summary)
         
         # Show cleanup thread status
         active_count = self.pg_manager.get_active_cleanup_count()

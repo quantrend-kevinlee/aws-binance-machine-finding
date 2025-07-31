@@ -5,7 +5,7 @@ import os
 import tempfile
 import threading
 from datetime import datetime
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Set
 from ..constants import UTC_PLUS_8
 from ..utils import ensure_directory_exists
 

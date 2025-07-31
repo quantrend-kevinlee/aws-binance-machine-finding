@@ -1,6 +1,5 @@
 """EC2 instance management for DC Machine."""
 
-import time
 from typing import Dict, Optional, Tuple, Any
 import boto3
 from botocore.exceptions import ClientError

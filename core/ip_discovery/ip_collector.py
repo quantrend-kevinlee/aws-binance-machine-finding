@@ -5,7 +5,6 @@ import time
 import threading
 from datetime import datetime
 from typing import Dict, List, Set, Optional
-from ..constants import UTC_PLUS_8
 
 
 class IPCollector:

@@ -15,7 +15,6 @@ import signal
 
 from core.config import Config
 from core.ip_discovery import IPCollector, IPValidator, IPPersistence
-from core.constants import UTC_PLUS_8
 
 
 class IPDiscoveryTool:

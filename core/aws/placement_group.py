@@ -2,7 +2,7 @@
 
 import time
 import threading
-from typing import Optional, List
+from typing import List
 import boto3
 
 from ..config import Config

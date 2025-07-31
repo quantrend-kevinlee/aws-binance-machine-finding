@@ -8,7 +8,7 @@ This project automatically finds AWS EC2 instances with the lowest network laten
 
 - **Discovery**: Find EC2 instances with ultra-low latency to Binance endpoints
 - **Optimization**: Identify optimal rack locations using dynamic placement groups
-- **Persistence**: Maintain best-performing instances as "champions" for each service
+- **Validation**: Find anchor instances that meet the specified latency criteria
 
 ### Latency Targets
 
@@ -47,7 +47,6 @@ python3 tool_scripts/query_jsonl.py all
    - **config.py**: Configuration management with validation
    - **orchestrator.py**: Main loop coordination
    - **aws/**: EC2 and placement group management
-   - **champion/**: Champion selection and persistence
    - **testing/**: SSH and latency test execution
    - **logging/**: JSONL and text format logging
    - **ip_discovery/**: IP discovery, validation, and loading with DNS fallback
@@ -58,12 +57,6 @@ python3 tool_scripts/query_jsonl.py all
    - Automatically loads IP lists from `reports/ip_lists/ip_list_latest.json`
    - Falls back to DNS resolution if no IP list available
    - Supports both local baseline testing and remote instance testing
-
-4. **Multi-Domain Champion System**
-   - Tracks best instance per Binance service domain
-   - Supports one instance championing multiple domains
-   - Persists champion state across script restarts
-   - Smart termination logic protects active champions
 
 ### AWS Resources
 
@@ -223,64 +216,15 @@ python3 test_instance_latency.py i-1234567890abcdef0
    - Perform 1,000 TCP handshakes per IP
    - Calculate comprehensive statistics: median, best (min), average, p1, p99, and max latencies
 
-3. **Champion Evaluation**
-   - Compare median latency against current champions
-   - Promote better instances to champion status
-   - Smart termination of replaced champions
+3. **Instance Evaluation**
+   - Check if instance meets latency criteria (anchor instance)
+   - Terminate instances that don't meet criteria
+   - Preserve instances that meet criteria and stop search
 
 4. **Result Logging**
    - JSONL format for flexible schema (`latency_log_YYYY-MM-DD.jsonl`)
    - Detailed text logs (`latency_log_YYYY-MM-DD.txt`)
-   - Champion state persistence (`champion_state.json`)
    - All timestamps in UTC+8 (Singapore/HK time)
-
-## Champion System
-
-### How It Works
-
-The champion system maintains the lowest-latency instance for each Binance service:
-
-- **Independent Tracking**: Each domain has its own champion
-- **Multi-Domain Support**: One instance can champion multiple domains
-- **Median Latency Criteria**: Champions selected by lowest median latency
-- **Protection**: Champions never auto-terminate
-- **Persistence**: State survives script restarts
-- **Auto-Naming**: Champion instances automatically renamed to reflect their status
-
-### Instance Naming Convention
-
-Instances are automatically renamed based on their status:
-
-- **Search instances**: `{timestamp}-DC-Search` (initial name)
-- **Champion instances**: `DC-Champ-{domain1}-{domain2}...` (e.g., `DC-Champ-fstream-ws-fapi`)
-- **Anchor instances**: `DC-ANCHOR` or `DC-Champ-{domains}-ANCHOR` if also a champion
-
-Domain abbreviations used in names:
-- `fstream-mm.binance.com` → `fstream`
-- `ws-fapi-mm.binance.com` → `ws-fapi`
-- `fapi-mm.binance.com` → `fapi`
-- `stream.binance.com` → `stream`
-- `ws-api.binance.com` → `ws-api`
-- `api.binance.com` → `api`
-
-### Champion State Example
-
-```json
-{
-  "format_version": "2.0",
-  "champions": {
-    "fstream-mm.binance.com": {
-      "instance_id": "i-03fa7ce9d925be452",
-      "placement_group": "dc-machine-cpg-1753253935",
-      "median_latency": 209.32,
-      "best_latency": 118.27,
-      "ip": "13.113.223.24",
-      "instance_type": "c8g.medium",
-      "timestamp": "2025-07-23T14:59:21+08:00"
-    }
-  }
-}
-```
 
 ## Local Testing
 
@@ -364,7 +308,7 @@ This script:
 - Provides SSH commands with the new EIP address
 
 Use cases:
-- Binding Binance VIP whitelisted IPs to champion instances
+- Binding Binance VIP whitelisted IPs to anchor instances
 - Moving EIPs between instances for testing
 - Getting ready-to-use SSH commands after EIP binding
 
@@ -400,15 +344,15 @@ Example JSONL record:
 
 ## Production Deployment
 
-### Using Champion IPs
+### Using Anchor Instance IPs
 
-Configure your trading applications to use the optimal IPs from champion instances:
+Configure your trading applications to use the optimal IPs from anchor instances that meet the latency criteria:
 
 ```python
-# From champion state
-fapi_ip = "3.114.17.148"      # fapi-mm.binance.com champion
-ws_ip = "52.198.205.156"       # ws-fapi-mm.binance.com champion
-stream_ip = "13.113.223.24"    # fstream-mm.binance.com champion
+# From anchor instance results
+fapi_ip = "3.114.17.148"      # fapi-mm.binance.com optimal IP
+ws_ip = "52.198.205.156"       # ws-fapi-mm.binance.com optimal IP
+stream_ip = "13.113.223.24"    # fstream-mm.binance.com optimal IP
 ```
 
 ### IP Pinning Methods
@@ -435,11 +379,10 @@ If **anchor instance found** (meets pass criteria):
 3. Launch production instances in SAME placement group
 4. Keep anchor running to maintain placement group
 
-If **only champions found**:
-1. Use champion IPs for each service
-2. Continue searching for better instances
-3. Launch additional instances in champion placement groups
-4. Monitor for new champions
+If **no anchor instance found**:
+1. Continue searching until anchor instance is found
+2. Instances that don't meet criteria are automatically terminated
+3. Only deploy production systems after finding anchor instances
 
 ## Placement Group Strategy
 
@@ -474,7 +417,7 @@ After SSH is ready, the system waits (configurable via max_instance_init_wait_se
 - **Fast testing**: `max_instance_init_wait_seconds: 30` - Shorter wait for quick tests
 - **Skip wait**: `max_instance_init_wait_seconds: 0` - Not recommended for accurate results
 
-### SSH Access to Champions
+### SSH Access to Anchor Instances
 
 ```bash
 # Method 1: Direct SSH if instance has public IP (auto-assigned)
@@ -504,7 +447,7 @@ This is useful when testing different instances with temporary public IPs.
 
 ### Manual Cleanup
 
-Champions are protected from auto-termination. To remove:
+Anchor instances are preserved when found. To remove:
 ```bash
 # Terminate instance
 aws ec2 terminate-instances --instance-ids i-abc123
@@ -519,9 +462,8 @@ python3 tool_scripts/cleanup_orphaned_placement_groups.py
 ### Monitoring
 
 - **Live Progress**: Console output shows real-time test results
-- **Champion Status**: Check `reports/champion_state.json`
 - **Historical Data**: Query JSONL logs for trends
-- **Champion Events**: Review `reports/champion_log_YYYY-MM-DD.txt`
+- **Instance Status**: Monitor console output for anchor instance discovery
 
 ## Scripts Reference
 
@@ -546,7 +488,6 @@ Located in `tool_scripts/` directory:
 | `ssh_instance.py` | SSH into instance by ID using its public IP |
 | `check_subnet_public_ip.py` | Check/configure subnet auto-assign public IP settings |
 | `launch_test_instance.py` | Launch test instance with public IP control |
-| `terminate_all_champions.py` | Terminate all champion instances and clean up placement groups |
 | `test_ip_for_is_fstream.py` | Verify if an IP belongs to fstream-mm.binance.com by comparing WebSocket responses |
 | `test_latency_with_new_auto_ip.py` | Test instance latency after forcing AWS to assign a new auto-assigned public IP |
 | `bind_eip.py` | Bind a specific Elastic IP to an instance and provide SSH commands |
@@ -556,7 +497,6 @@ Located in `tool_scripts/` directory:
 | File | Purpose |
 |------|---------|
 | `config.json` | AWS resources and test parameters |
-| `reports/champion_state.json` | Current champion instances |
 | `reports/latency_log_*.jsonl` | Test results in JSONL format |
 | `reports/latency_log_*.txt` | Detailed test logs |
 | `reports/ip_lists/ip_list_latest.json` | Latest discovered IP addresses |
@@ -579,12 +519,7 @@ Located in `tool_scripts/` directory:
    - Script automatically tries next instance type
    - Consider adjusting instance_types in config.json
 
-4. **Champion Not Found on Restart**
-   - Script validates champions are still running
-   - Terminated instances removed from champion state
-   - Check AWS console for instance status
-
-5. **Latency Test Timeouts**
+4. **Latency Test Timeouts**
    - Test timeout scales with domain count (configurable via latency_test_timeout_scale_per_domain)
    - Minimum timeout ensures tests complete (configurable via latency_test_timeout_floor)
    - Progress is now displayed in real-time on your terminal
@@ -596,8 +531,7 @@ Located in `tool_scripts/` directory:
 
 - Run script during off-peak hours for consistent results
 - Allow script to test multiple placement groups (rack diversity)
-- Keep champion instances running for production use
-- Monitor champion state file for unexpected changes
+- Keep anchor instances running for production use
 - Use Ctrl+C for graceful shutdown to ensure cleanup
 
 ## Development Notes
@@ -607,14 +541,14 @@ Located in `tool_scripts/` directory:
 1. **Modular Architecture**: Separated concerns for maintainability and testing
 2. **SSH-based Testing**: More reliable than EC2 console output
 3. **Dynamic Placement Groups**: Ensures testing across all racks
-4. **Median Latency**: More stable metric than minimum for champions
+4. **Median Latency**: More stable metric than minimum for evaluation
 5. **JSONL Format**: Flexible schema for future domain changes
 6. **UTC+8 Timezone**: Aligns with APAC trading hours
 7. **Asynchronous Cleanup**: Non-blocking resource management
 8. **Dynamic Test Timeout**: Scales with number of domains (configurable via latency_test_timeout_scale_per_domain) with a minimum floor (latency_test_timeout_floor)
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
 10. **Max Instance Initialization Wait**: Configurable maximum wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
-11. **Auto-Naming**: Instances automatically renamed to reflect their champion/anchor status for easy identification
+11. **Auto-Naming**: Anchor instances automatically renamed to "DC-ANCHOR" for easy identification
 12. **Automatic IP List Loading**: `test_instance_latency.py` auto-loads IP lists from default location for comprehensive testing
 13. **Local Testing Support**: `test_instance_latency.py` can run locally without instance ID for baseline comparisons
 14. **Clean Architecture**: Internal implementation organized in `core/`, user-facing scripts at root level
