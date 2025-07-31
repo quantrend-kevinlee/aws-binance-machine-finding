@@ -31,6 +31,7 @@ class Orchestrator:
         self._current_placement_group = None
         self._current_eip_allocation_id = None
         self._current_eip_name = None
+        self._current_eip_associated = False  # Track if EIP is associated with instance
         
         # Ensure report directory exists
         ensure_directory_exists(config.report_dir)
@@ -165,6 +166,7 @@ class Orchestrator:
             self._current_placement_group = None
             self._current_eip_allocation_id = None
             self._current_eip_name = None
+            self._current_eip_associated = False
             return
         
         # Track instance for cleanup
@@ -181,6 +183,7 @@ class Orchestrator:
         self._current_placement_group = None
         self._current_eip_allocation_id = None
         self._current_eip_name = None
+        self._current_eip_associated = False
         
         if not success:
             # Instance failed somewhere in processing
@@ -232,6 +235,9 @@ class Orchestrator:
             self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
             time.sleep(2)
             return False
+        
+        # Mark EIP as associated
+        self._current_eip_associated = True
         
         # Get EIP public IP for testing
         public_ip = self.eip_manager.get_eip_public_ip(eip_allocation_id)
@@ -365,10 +371,16 @@ class Orchestrator:
                 if self._current_placement_group:
                     print(f"-> Scheduling cleanup of placement group {self._current_placement_group} ...")
                     self.pg_manager.schedule_async_cleanup(self._current_instance_id, self._current_placement_group)
-                # Schedule EIP cleanup if exists
+                # Handle EIP cleanup based on association status
                 if self._current_eip_allocation_id and self._current_eip_name:
-                    print(f"-> Scheduling cleanup of EIP {self._current_eip_name} ...")
-                    self.eip_manager.schedule_async_eip_cleanup(self._current_instance_id, self._current_eip_allocation_id, self._current_eip_name)
+                    if self._current_eip_associated:
+                        # EIP is associated with instance, schedule async cleanup
+                        print(f"-> Scheduling cleanup of EIP {self._current_eip_name} (associated with instance)...")
+                        self.eip_manager.schedule_async_eip_cleanup(self._current_instance_id, self._current_eip_allocation_id, self._current_eip_name)
+                    else:
+                        # EIP was allocated but never associated, release immediately
+                        print(f"-> Releasing unassociated EIP {self._current_eip_name} immediately...")
+                        self.eip_manager.release_eip(self._current_eip_allocation_id)
         else:
             # No instance but resources may exist - clean up directly
             if self._current_placement_group:

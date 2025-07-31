@@ -82,9 +82,9 @@ python3 tool_scripts/query_jsonl.py all
     "availability_zone": "ap-northeast-1a",
     "subnet_id": "subnet-07954f36129e8beb1",
     "security_group_id": "sg-080dea8b90091be0b",
-    "key_name": "dc-machine",
-    "key_path": "~/.ssh/dc-machine",
-    "placement_group_base": "dc-machine-cpg",
+    "key_name": "qtx",
+    "key_path": "~/.ssh/qtx.pem",
+    "placement_group_name_base": "ll_cpg",
     "latency_thresholds": {
         "median_us": 122,
         "best_us": 102
@@ -176,12 +176,12 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
 ```json
 {
   "last_updated": "2025-07-25T10:30:00+08:00",
+  "last_validated": "2025-07-25T10:30:00+08:00",
   "domains": {
     "fstream-mm.binance.com": {
       "ips": {
         "54.65.8.148": {
-          "first_seen": "2025-07-25T10:00:00+08:00",
-          "last_validated": "2025-07-25T10:30:00+08:00"
+          "first_seen": "2025-07-25T10:00:00+08:00"
         }
       }
     }
@@ -209,7 +209,7 @@ python3 test_instance_latency.py i-1234567890abcdef0
 ## Testing Workflow
 
 1. **Instance Launch**
-   - Create unique placement group (`dc-machine-cpg-{timestamp}`)
+   - Create unique placement group (`ll_cpg-{timestamp}`)
    - Launch instance with search criteria prefix (`Search_{timestamp}_{median}/{best}`)
    - Instance automatically gets public IP (subnet auto-assign enabled)
    - Instance fails gracefully if no public IP (check subnet auto-assign setting)
@@ -399,7 +399,7 @@ AWS cluster placement groups provide lowest latency within a rack, but:
 
 ### Implementation
 
-- **Unique Names**: `dc-machine-cpg-{timestamp}` per instance
+- **Unique Names**: `ll_cpg-{timestamp}` per instance
 - **Automatic Cleanup**: Background threads delete groups after instance termination (checks every 10 seconds)
 - **Graceful Shutdown**: Ctrl+C waits for cleanup completion
 
@@ -425,7 +425,7 @@ After SSH is ready, the system waits (configurable via max_instance_init_wait_se
 
 ```bash
 # Method 1: Direct SSH if instance has public IP (auto-assigned)
-ssh -i ~/.ssh/dc-machine -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@<PUBLIC_IP>
+ssh -i ~/.ssh/qtx.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@<PUBLIC_IP>
 
 # Method 2: Using the convenient ssh_instance.py script (handles IP detection)
 python3 tool_scripts/ssh_instance.py i-03fa7ce9d925be452
@@ -437,7 +437,7 @@ python3 tool_scripts/bind_eip.py i-03fa7ce9d925be452 eipalloc-05500f18fa63990b6
 aws ec2 associate-address \
   --instance-id i-03fa7ce9d925be452 \
   --allocation-id <YOUR_EIP_ALLOCATION_ID>
-ssh -i ~/.ssh/dc-machine ec2-user@<EIP_ADDRESS>
+ssh -i ~/.ssh/qtx.pem ec2-user@<EIP_ADDRESS>
 ```
 
 #### SSH Without Known Hosts Issues
@@ -457,7 +457,7 @@ Qualified instances are preserved when found. To remove:
 aws ec2 terminate-instances --instance-ids i-abc123
 
 # Delete placement group (after instance terminates)
-aws ec2 delete-placement-group --group-name dc-machine-cpg-1753253935
+aws ec2 delete-placement-group --group-name ll_cpg-1753253935
 
 # Or use the cleanup script to find and remove all orphaned placement groups
 python3 tool_scripts/cleanup_orphaned_placement_groups.py

@@ -30,7 +30,7 @@ def load_config():
 def main():
     config = load_config()
     region = config['region']
-    pg_base = config['placement_group_base']
+    pg_base = config['placement_group_name_base']
     
     ec2 = boto3.client('ec2', region_name=region)
     

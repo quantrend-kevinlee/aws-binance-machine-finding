@@ -30,11 +30,11 @@
     ],
     "instance_types": [
         "c8g.medium",
-        "c8g.48xlarge",
         "c8g.large",
+        "c8g.48xlarge",
         "c8g.xlarge",
-        "c8g.24xlarge",
         "c8g.2xlarge",
+        "c8g.24xlarge",
         "c8g.4xlarge",
         "c8g.12xlarge",
         "c8g.8xlarge"
