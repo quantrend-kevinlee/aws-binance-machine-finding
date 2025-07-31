@@ -1,4 +1,4 @@
-"""Testing modules for DC Machine."""
+"""Testing modules for the latency finder."""
 
 from .ssh_client import SSHClient
 from .latency_runner import LatencyTestRunner

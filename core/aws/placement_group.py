@@ -1,4 +1,4 @@
-"""Placement group management for DC Machine."""
+"""Placement group management for the latency finder."""
 
 import time
 import threading
@@ -153,4 +153,4 @@ class PlacementGroupManager:
         Returns:
             Placement group name
         """
-        return f"{self.config.placement_group_base}-{timestamp}"
+        return f"{self.config.placement_group_name_base}-{timestamp}"

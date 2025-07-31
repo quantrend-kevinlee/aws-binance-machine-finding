@@ -1,4 +1,4 @@
-"""IP validation and liveness checking for DC Machine."""
+"""IP validation and liveness checking for the latency finder."""
 
 import socket
 import time

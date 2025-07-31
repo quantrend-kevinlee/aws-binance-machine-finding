@@ -1,4 +1,4 @@
-"""Latency test execution for DC Machine."""
+"""Latency test execution for the latency finder."""
 
 import json
 import os

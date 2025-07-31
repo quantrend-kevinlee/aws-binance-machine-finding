@@ -1,5 +1,5 @@
 """
-Internal latency testing script for DC Machine.
+Internal latency testing script for the latency finder.
 
 This script performs TCP handshake latency measurements to Binance endpoints.
 It's designed to be deployed to EC2 instances or run locally, and outputs

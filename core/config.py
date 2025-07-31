@@ -1,4 +1,4 @@
-"""Configuration management for DC Machine."""
+"""Configuration management for the latency finder."""
 
 import json
 import os
@@ -30,10 +30,11 @@ class Config:
             # Validate required fields
             required_fields = [
                 'region', 'availability_zone', 'subnet_id', 'security_group_id',
-                'key_name', 'key_path', 'placement_group_base',
+                'key_name', 'key_path', 'placement_group_name_base', 'eip_name_base',
                 'latency_thresholds', 'instance_types', 'report_dir',
                 'latency_test_domains', 'discovery_domains', 'ip_list_dir',
-                'max_instance_init_wait_seconds', 'latency_test_timeout_scale_per_domain', 'latency_test_timeout_floor'
+                'max_instance_init_wait_seconds', 'latency_test_timeout_scale_per_domain', 'latency_test_timeout_floor',
+                'ebs_volume_size_gb'
             ]
             
             missing_fields = [field for field in required_fields if field not in self._data]
@@ -83,9 +84,14 @@ class Config:
     
     
     @property
-    def placement_group_base(self) -> str:
+    def placement_group_name_base(self) -> str:
         """Base name for placement groups."""
-        return self._data['placement_group_base']
+        return self._data['placement_group_name_base']
+    
+    @property
+    def eip_name_base(self) -> str:
+        """Base name for Elastic IPs."""
+        return self._data['eip_name_base']
     
     @property
     def median_threshold_us(self) -> float:
@@ -136,3 +142,8 @@ class Config:
     def discovery_domains(self) -> List[str]:
         """List of domains for IP discovery (may include more domains than tested)."""
         return self._data['discovery_domains']
+    
+    @property
+    def ebs_volume_size_gb(self) -> int:
+        """EBS root volume size in GB."""
+        return self._data['ebs_volume_size_gb']

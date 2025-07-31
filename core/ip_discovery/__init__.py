@@ -1,4 +1,4 @@
-"""IP discovery and management module for DC Machine."""
+"""IP discovery and management module for the latency finder."""
 
 from .ip_collector import IPCollector
 from .ip_validator import IPValidator

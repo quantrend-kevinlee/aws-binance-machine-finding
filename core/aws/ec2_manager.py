@@ -1,4 +1,4 @@
-"""EC2 instance management for DC Machine."""
+"""EC2 instance management for the latency finder."""
 
 from typing import Dict, Optional, Tuple, Any
 import boto3
@@ -41,6 +41,18 @@ class EC2Manager:
             # Intel/AMD (x86) instances
             image_id = "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
         
+        # Configure block device mappings for custom root volume size
+        # Amazon Linux 2023 uses /dev/xvda as root device for both ARM64 and x86_64
+        block_device_mappings = [{
+            'DeviceName': '/dev/xvda',
+            'Ebs': {
+                'VolumeSize': self.config.ebs_volume_size_gb,
+                'VolumeType': 'gp3',  # Use gp3 for better performance/cost ratio
+                'DeleteOnTermination': True,
+                'Encrypted': False  # Can be set to True if encryption is required
+            }
+        }]
+        
         try:
             response = self.client.run_instances(
                 ImageId=image_id,
@@ -54,6 +66,7 @@ class EC2Manager:
                     "GroupName": placement_group,
                     "AvailabilityZone": self.config.availability_zone
                 },
+                BlockDeviceMappings=block_device_mappings,
                 UserData=self._get_user_data(),
                 TagSpecifications=[{
                     "ResourceType": "instance",

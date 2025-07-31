@@ -1,4 +1,4 @@
-"""SSH client operations for DC Machine."""
+"""SSH client operations for the latency finder."""
 
 import subprocess
 import sys
@@ -119,9 +119,9 @@ class SSHClient:
                     break
                 
                 if use_select:
-                    # Read any available stderr
-                    ready, _, _ = select.select([process.stderr], [], [], 0.1)
-                    if ready:
+                    # Read any available stderr and stdout
+                    ready, _, _ = select.select([process.stderr, process.stdout], [], [], 0.1)
+                    if process.stderr in ready:
                         try:
                             line = process.stderr.readline()
                             if line:
@@ -131,18 +131,30 @@ class SSHClient:
                                 sys.stderr.flush()
                         except:
                             pass
+                    if process.stdout in ready:
+                        try:
+                            line = process.stdout.readline()
+                            if line:
+                                stdout_lines.append(line)
+                        except:
+                            pass
                 else:
                     # Simple polling without select
                     time.sleep(0.1)
             
-            # Get remaining output
-            stdout, remaining_stderr = process.communicate()
-            if stdout:
-                stdout_lines.append(stdout)
-            if remaining_stderr:
-                for line in remaining_stderr.splitlines():
-                    stderr_lines.append(line)
-                    print(f"[REMOTE] {line}", file=sys.stderr)
+            # Get any remaining output after process finished
+            try:
+                stdout, remaining_stderr = process.communicate(timeout=5)  # Short timeout to avoid hanging
+                if stdout:
+                    stdout_lines.append(stdout)
+                if remaining_stderr:
+                    for line in remaining_stderr.splitlines():
+                        stderr_lines.append(line)
+                        print(f"[REMOTE] {line}", file=sys.stderr)
+            except subprocess.TimeoutExpired:
+                # If communicate times out, just use what we have
+                process.kill()
+                print("[WARN] Timeout while reading final output, using partial results", file=sys.stderr)
             
             return ''.join(stdout_lines), '\n'.join(stderr_lines), process.returncode
             

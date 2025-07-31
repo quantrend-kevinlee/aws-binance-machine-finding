@@ -1,4 +1,4 @@
-"""IP list persistence management for DC Machine."""
+"""IP list persistence management for the latency finder."""
 
 import json
 import os

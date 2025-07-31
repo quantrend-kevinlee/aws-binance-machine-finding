@@ -1,4 +1,4 @@
-"""Shared constants for DC Machine."""
+"""Shared constants for the latency finder."""
 
 from datetime import timezone, timedelta
 
@@ -7,12 +7,12 @@ UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 # User data script for EC2 instances
 USER_DATA_SCRIPT = """#!/bin/bash
-# DC Machine Instance - No optimizations
+# Latency finder instance - No optimizations
 # This runs automatically when the instance boots
 
 # Create log file
-LOG_FILE="/var/log/dc-machine-init.log"
-echo "[$(date)] DC Machine instance started" >> $LOG_FILE
+LOG_FILE="/var/log/latency-finder-init.log"
+echo "[$(date)] Latency finder instance started" >> $LOG_FILE
 
 # Install basic required packages
 echo "[$(date)] Installing required packages..." >> $LOG_FILE
@@ -24,7 +24,7 @@ echo "  Instance ID: $(ec2-metadata --instance-id | cut -d' ' -f2)" >> $LOG_FILE
 echo "  Instance Type: $(ec2-metadata --instance-type | cut -d' ' -f2)" >> $LOG_FILE 2>/dev/null || true
 echo "  Availability Zone: $(ec2-metadata --availability-zone | cut -d' ' -f2)" >> $LOG_FILE 2>/dev/null || true
 
-echo "[$(date)] DC Machine initialization completed" >> $LOG_FILE
+echo "[$(date)] Latency finder initialization completed" >> $LOG_FILE
 """
 
 # Default values

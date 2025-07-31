@@ -1,4 +1,4 @@
-"""IP collection through DNS queries for DC Machine."""
+"""IP collection through DNS queries for the latency finder."""
 
 import subprocess
 import time

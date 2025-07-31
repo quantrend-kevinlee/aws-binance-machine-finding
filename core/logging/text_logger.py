@@ -1,4 +1,4 @@
-"""Text format logging for DC Machine."""
+"""Text format logging for the latency finder."""
 
 from typing import Dict, Any
 
