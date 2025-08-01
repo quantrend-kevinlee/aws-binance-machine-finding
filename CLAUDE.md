@@ -231,6 +231,7 @@ python3 test_instance_latency.py i-1234567890abcdef0
    - Check if instance meets latency criteria (qualified instance)
    - Terminate instances that don't meet criteria
    - Preserve qualified instances and continue searching for more
+   - Enable termination protection and stop protection on qualified instances automatically
    - In EIP mode: Both placement groups and EIPs are preserved
    - In Auto-IP mode: Only placement groups are preserved (IPs may change on stop/start)
 
@@ -462,9 +463,15 @@ This is useful when testing different instances with temporary public IPs.
 
 ### Manual Cleanup
 
-Qualified instances are preserved when found. To remove:
+Qualified instances are preserved when found with both termination and stop protection enabled. To remove:
 ```bash
-# Terminate instance
+# First disable stop protection (if you need to stop it first)
+aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-stop
+
+# Then disable termination protection
+aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-termination
+
+# Finally terminate instance
 aws ec2 terminate-instances --instance-ids i-abc123
 
 # Delete placement group (after instance terminates)
@@ -472,6 +479,36 @@ aws ec2 delete-placement-group --group-name ll_cpg-1753253935
 
 # Or use the cleanup script to find and remove all orphaned placement groups
 python3 tool_scripts/cleanup_orphaned_placement_groups.py
+```
+
+### Instance Protection
+
+Qualified instances automatically have both termination protection and stop protection enabled to prevent accidental deletion or stopping. 
+
+#### Termination Protection
+- Prevents termination via console, CLI, or API
+- Must be manually disabled before terminating the instance
+- Does not prevent instance-initiated shutdown (if configured)
+
+#### Stop Protection
+- Prevents stopping the instance via console, CLI, or API
+- Must be manually disabled before stopping the instance
+- Does not prevent instance-initiated shutdown from within the OS
+- Helps preserve valuable low-latency instances that require continuous operation
+
+To manually manage protection:
+```bash
+# Enable termination protection
+aws ec2 modify-instance-attribute --instance-id i-abc123 --disable-api-termination
+
+# Disable termination protection
+aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-termination
+
+# Enable stop protection
+aws ec2 modify-instance-attribute --instance-id i-abc123 --disable-api-stop
+
+# Disable stop protection
+aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-stop
 ```
 
 ### Monitoring
@@ -570,3 +607,4 @@ Located in `tool_scripts/` directory:
 15. **Flexible IP Assignment**: System supports both EIP mode and auto-assigned IP mode (configured via `use_eip` in config.json)
 16. **Separated IP Discovery**: IP discovery runs as a standalone process (`discover_ips.py`), not during instance testing, for cleaner separation of concerns
 17. **Continuous Search**: Search continues indefinitely to find multiple qualified instances rather than stopping after the first one
+18. **Automatic Instance Protection**: Qualified instances automatically have both termination and stop protection enabled to prevent accidental deletion or stopping
