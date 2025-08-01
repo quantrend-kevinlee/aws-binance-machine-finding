@@ -105,6 +105,16 @@ class Orchestrator:
         """Run the main orchestration loop."""
         print(f"Starting AWS instance search in AZ {self.config.availability_zone}...")
         
+        # Log IP assignment mode
+        if self.config.use_eip:
+            print(f"IP Mode: Elastic IP (EIP) - Each instance will get a dedicated EIP")
+            print(f"         EIPs will be preserved with qualified instances")
+        else:
+            print(f"IP Mode: Auto-assigned - Using subnet's auto-assigned public IPs")
+            print(f"         Note: IPs may change if instances are stopped/started")
+        print(f"Latency thresholds: median ≤ {self.config.latency_thresholds.median_us}μs OR best ≤ {self.config.latency_thresholds.best_us}μs")
+        print("="*60)
+        
         # Load IP list from file
         self._load_ip_list()
         
