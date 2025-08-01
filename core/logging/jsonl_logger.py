@@ -25,7 +25,8 @@ class JSONLLogger:
                 pass
     
     def log_test_result(self, timestamp: str, instance_id: str, instance_type: str,
-                       instance_passed: bool, domain_stats: Dict[str, Any]) -> None:
+                       instance_passed: bool, domain_stats: Dict[str, Any],
+                       ip_mode: str, public_ip: str) -> None:
         """Log test result in JSONL format.
         
         Args:
@@ -34,11 +35,15 @@ class JSONLLogger:
             instance_type: EC2 instance type
             instance_passed: Whether instance passed criteria
             domain_stats: Domain statistics with best values
+            ip_mode: IP assignment mode ('eip' or 'auto-assigned')
+            public_ip: The public IP address of the instance
         """
         jsonl_entry = {
             "timestamp": timestamp,
             "instance_id": instance_id,
             "instance_type": instance_type,
+            "ip_mode": ip_mode,
+            "public_ip": public_ip,
             "passed": instance_passed,
             "domains": {}
         }

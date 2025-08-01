@@ -16,6 +16,10 @@ def main():
     # Load configuration
     config = Config()
     
+    # Show IP assignment mode from config
+    print(f"Using {'Elastic IPs (EIP)' if config.use_eip else 'auto-assigned public IPs'} for instances")
+    print("="*60)
+    
     # Create and run orchestrator
     orchestrator = Orchestrator(config)
     orchestrator.run()

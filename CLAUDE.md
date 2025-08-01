@@ -69,7 +69,9 @@ python3 tool_scripts/query_jsonl.py all
 - **Instance Types**: c8g.medium through c8g.48xlarge (ARM-based Graviton instances)
 - **Placement Groups**: Dynamic cluster groups per instance
 - **Public IP Assignment**: Auto-assign enabled on subnet (instances get public IPs automatically)
-- **No Elastic IP Binding**: Instances use auto-assigned public IPs directly
+- **IP Assignment Modes**: 
+  - **EIP mode**: Allocates Elastic IPs for each instance, providing stable IPs (set `use_eip: true` in config.json)
+  - **Auto-IP mode**: Uses subnet auto-assigned public IPs (set `use_eip: false` in config.json)
 - **VPC Requirements**: DNS enabled (enableDnsSupport, enableDnsHostnames)
 
 ## Configuration
@@ -85,6 +87,7 @@ python3 tool_scripts/query_jsonl.py all
     "key_name": "qtx",
     "key_path": "~/.ssh/qtx.pem",
     "placement_group_name_base": "ll_cpg",
+    "use_eip": true,  // true = allocate and bind EIP for each instance, false = use subnet auto-assigned IPs
     "latency_thresholds": {
         "median_us": 122,
         "best_us": 102
@@ -214,18 +217,24 @@ python3 test_instance_latency.py i-1234567890abcdef0
    - Instance automatically gets public IP (subnet auto-assign enabled)
    - Instance fails gracefully if no public IP (check subnet auto-assign setting)
 
-2. **Latency Testing**
+2. **IP Assignment**
+   - **EIP mode** (when `use_eip: true`): Allocate and associate Elastic IP with instance
+   - **Auto-IP mode** (when `use_eip: false`): Use subnet's auto-assigned public IP
+
+3. **Latency Testing**
    - SSH to instance and deploy test script
    - Use pre-discovered IPs from `ip_list_latest.json`
    - Perform 1,000 TCP handshakes per IP
    - Calculate comprehensive statistics: median, best (min), average, p1, p99, and max latencies
 
-3. **Instance Evaluation**
+4. **Instance Evaluation**
    - Check if instance meets latency criteria (qualified instance)
    - Terminate instances that don't meet criteria
    - Preserve qualified instances and continue searching for more
+   - In EIP mode: Both placement groups and EIPs are preserved
+   - In Auto-IP mode: Only placement groups are preserved (IPs may change on stop/start)
 
-4. **Result Logging**
+5. **Result Logging**
    - JSONL format for flexible schema (`latency_log_YYYY-MM-DD.jsonl`)
    - Detailed text logs (`latency_log_YYYY-MM-DD.txt`)
    - All timestamps in UTC+8 (Singapore/HK time)
@@ -382,6 +391,8 @@ With **qualified instances found** (meet pass criteria):
 2. Extract optimal IPs from results
 3. Launch production instances in SAME placement groups as qualified instances
 4. Keep qualified instances running to maintain placement groups
+5. If using EIP mode: EIPs are preserved with qualified instances
+6. If using Auto-IP mode: Note that IPs may change if instances are stopped/started
 
 If **no qualified instances found yet**:
 1. Continue searching until qualified instances are found
@@ -475,7 +486,7 @@ python3 tool_scripts/cleanup_orphaned_placement_groups.py
 
 | Script | Purpose |
 |--------|---------|
-| `find_instance.py` | Main entry point - orchestrates the instance finding process |
+| `find_instance.py` | Main entry point - orchestrates the instance finding process<br>IP mode configured via `use_eip` in config.json |
 | `test_instance_latency.py` | Run latency tests locally or on remote instances with beautiful formatted output |
 | `discover_ips.py` | Standalone IP discovery and validation tool (run separately from instance testing) |
 
@@ -556,6 +567,6 @@ Located in `tool_scripts/` directory:
 12. **Automatic IP List Loading**: `test_instance_latency.py` auto-loads IP lists from default location for comprehensive testing
 13. **Local Testing Support**: `test_instance_latency.py` can run locally without instance ID for baseline comparisons
 14. **Clean Architecture**: Internal implementation organized in `core/`, user-facing scripts at root level
-15. **No EIP Dependency**: System relies entirely on subnet auto-assigned public IPs, eliminating EIP management overhead
+15. **Flexible IP Assignment**: System supports both EIP mode and auto-assigned IP mode (configured via `use_eip` in config.json)
 16. **Separated IP Discovery**: IP discovery runs as a standalone process (`discover_ips.py`), not during instance testing, for cleaner separation of concerns
 17. **Continuous Search**: Search continues indefinitely to find multiple qualified instances rather than stopping after the first one

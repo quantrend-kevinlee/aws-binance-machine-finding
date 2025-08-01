@@ -121,37 +121,40 @@ class Orchestrator:
         instance_type = self.config.instance_types[self.instance_index]
         self.instance_index = (self.instance_index + 1) % len(self.config.instance_types)
         
-        # Create placement group and EIP
+        # Create placement group
         unix_timestamp = int(time.time())
         placement_group_name = self.pg_manager.generate_placement_group_name(unix_timestamp)
-        eip_name = self.eip_manager.generate_eip_name(unix_timestamp)
         
         # Track placement group for cleanup
         self._current_placement_group = placement_group_name
-        self._current_eip_name = eip_name
         
         print(f"\nCreating placement group {placement_group_name}...")
         if not self.pg_manager.create_placement_group(placement_group_name):
             self._current_placement_group = None
-            self._current_eip_name = None
             time.sleep(5)
             return
         
-        # Allocate EIP
-        print(f"Allocating EIP {eip_name}...")
-        eip_allocation_id, eip_public_ip, eip_error = self.eip_manager.allocate_eip(eip_name)
-        
-        if not eip_allocation_id:
-            print(f"[ERROR] EIP allocation failed: {eip_error}")
-            print(f"Deleting placement group {placement_group_name}...")
-            self.pg_manager.delete_placement_group(placement_group_name)
-            self._current_placement_group = None
-            self._current_eip_name = None
-            time.sleep(5)
-            return
-        
-        # Track EIP for cleanup
-        self._current_eip_allocation_id = eip_allocation_id
+        # Allocate EIP if needed
+        eip_allocation_id = None
+        eip_name = None
+        if self.config.use_eip:
+            eip_name = self.eip_manager.generate_eip_name(unix_timestamp)
+            self._current_eip_name = eip_name
+            
+            print(f"Allocating EIP {eip_name}...")
+            eip_allocation_id, eip_public_ip, eip_error = self.eip_manager.allocate_eip(eip_name)
+            
+            if not eip_allocation_id:
+                print(f"[ERROR] EIP allocation failed: {eip_error}")
+                print(f"Deleting placement group {placement_group_name}...")
+                self.pg_manager.delete_placement_group(placement_group_name)
+                self._current_placement_group = None
+                self._current_eip_name = None
+                time.sleep(5)
+                return
+            
+            # Track EIP for cleanup
+            self._current_eip_allocation_id = eip_allocation_id
         
         # Launch instance
         instance_name = f"Search_{unix_timestamp}_{int(self.config.median_threshold_us)}/{int(self.config.best_threshold_us)}"
@@ -223,33 +226,52 @@ class Orchestrator:
             print("[WARN] Instance not running within timeout, terminating...")
             self.ec2_manager.terminate_instance(instance_id)
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
-            self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
+            if self.config.use_eip and eip_allocation_id:
+                self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
             return False
         
-        # Associate EIP with instance
-        print(f"Associating EIP with instance...")
-        if not self.eip_manager.associate_eip(eip_allocation_id, instance_id):
-            print("[ERROR] Failed to associate EIP with instance. Terminating...")
-            self.ec2_manager.terminate_instance(instance_id)
-            self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
-            self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
-            time.sleep(2)
-            return False
+        # Get public IP - either from EIP or auto-assigned
+        if self.config.use_eip:
+            # Associate EIP with instance
+            print(f"Associating EIP with instance...")
+            if not self.eip_manager.associate_eip(eip_allocation_id, instance_id):
+                print("[ERROR] Failed to associate EIP with instance. Terminating...")
+                self.ec2_manager.terminate_instance(instance_id)
+                self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
+                self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
+                time.sleep(2)
+                return False
+            
+            # Mark EIP as associated
+            self._current_eip_associated = True
+            
+            # Get EIP public IP for testing
+            public_ip = self.eip_manager.get_eip_public_ip(eip_allocation_id)
+            if not public_ip:
+                print("[ERROR] Could not get EIP public IP. Terminating...")
+                self.ec2_manager.terminate_instance(instance_id)
+                self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
+                self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
+                time.sleep(2)
+                return False
+            
+            print(f"[OK] Instance has EIP: {public_ip}")
+        else:
+            # Get auto-assigned public IP
+            print(f"Getting auto-assigned public IP...")
+            # Wait a moment for AWS to assign the public IP
+            time.sleep(5)
+            public_ip = self.ec2_manager.get_instance_public_ip(instance_id)
+            if not public_ip:
+                print("[ERROR] Instance has no auto-assigned public IP. Terminating...")
+                print("       Check subnet auto-assign public IP setting")
+                self.ec2_manager.terminate_instance(instance_id)
+                self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
+                time.sleep(2)
+                return False
+            
+            print(f"[OK] Instance has auto-assigned IP: {public_ip}")
         
-        # Mark EIP as associated
-        self._current_eip_associated = True
-        
-        # Get EIP public IP for testing
-        public_ip = self.eip_manager.get_eip_public_ip(eip_allocation_id)
-        if not public_ip:
-            print("[ERROR] Could not get EIP public IP. Terminating...")
-            self.ec2_manager.terminate_instance(instance_id)
-            self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
-            self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
-            time.sleep(2)
-            return False
-        
-        print(f"[OK] Instance has EIP: {public_ip}")
         test_ip = public_ip
         
         # Wait for SSH
@@ -257,7 +279,8 @@ class Orchestrator:
             print("[ERROR] SSH not available after timeout. Terminating instance...")
             self.ec2_manager.terminate_instance(instance_id)
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
-            self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
+            if self.config.use_eip and eip_allocation_id:
+                self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
             time.sleep(2)
             return False
         
@@ -277,7 +300,8 @@ class Orchestrator:
         if not results:
             self.ec2_manager.terminate_instance(instance_id)
             self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
-            self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
+            if self.config.use_eip and eip_allocation_id:
+                self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
             time.sleep(2)
             return False
         
@@ -294,17 +318,23 @@ class Orchestrator:
             instance_id, instance_type, domain_stats, instance_passed
         ))
         
+        # Determine IP mode for logging
+        ip_mode = "eip" if self.config.use_eip else "auto-assigned"
+        
         # Write logs
         self.jsonl_logger.log_test_result(
-            timestamp, instance_id, instance_type, instance_passed, domain_stats
+            timestamp, instance_id, instance_type, instance_passed, domain_stats,
+            ip_mode, test_ip
         )
         self.text_logger.log_test_result(
             timestamp, instance_id, instance_type, instance_passed, domain_stats,
-            results, self.config.median_threshold_us, self.config.best_threshold_us
+            results, self.config.median_threshold_us, self.config.best_threshold_us,
+            ip_mode, test_ip
         )
         self.detailed_jsonl_logger.log_test_result(
             timestamp, instance_id, instance_type, instance_passed, results,
-            self.config.median_threshold_us, self.config.best_threshold_us
+            self.config.median_threshold_us, self.config.best_threshold_us,
+            ip_mode, test_ip
         )
         
         # Check if this is a qualified instance
@@ -347,9 +377,10 @@ class Orchestrator:
         print(f"Scheduling placement group {placement_group_name} for deletion...")
         self.pg_manager.schedule_async_cleanup(instance_id, placement_group_name)
         
-        # Schedule EIP release
-        print(f"Scheduling EIP {eip_name} for release...")
-        self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
+        # Schedule EIP release if using EIP
+        if self.config.use_eip and eip_allocation_id:
+            print(f"Scheduling EIP {eip_name} for release...")
+            self.eip_manager.schedule_async_eip_cleanup(instance_id, eip_allocation_id, eip_name)
         
         time.sleep(2)
     
@@ -399,11 +430,20 @@ class Orchestrator:
         if self.qualified_instances:
             print(f"\nFound {len(self.qualified_instances)} qualified instance(s):")
             for i, (instance_id, instance_type, placement_group, eip_allocation_id) in enumerate(self.qualified_instances, 1):
-                eip_public_ip = self.eip_manager.get_eip_public_ip(eip_allocation_id)
                 print(f"  {i}. {instance_id} ({instance_type}) in {placement_group}")
-                print(f"     EIP: {eip_public_ip} ({eip_allocation_id})")
+                if self.config.use_eip and eip_allocation_id:
+                    eip_public_ip = self.eip_manager.get_eip_public_ip(eip_allocation_id)
+                    print(f"     EIP: {eip_public_ip} ({eip_allocation_id})")
+                else:
+                    # Get current auto-assigned IP
+                    auto_ip = self.ec2_manager.get_instance_public_ip(instance_id)
+                    print(f"     Auto-assigned IP: {auto_ip}")
             print("\nKeep these instances running for production use.")
-            print("Both placement groups and EIPs are preserved for qualified instances.")
+            if self.config.use_eip:
+                print("Both placement groups and EIPs are preserved for qualified instances.")
+            else:
+                print("Placement groups are preserved for qualified instances.")
+                print("Note: Auto-assigned IPs may change if instances are stopped/started.")
         else:
             print("Search stopped without finding any qualified instances.")
         

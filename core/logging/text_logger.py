@@ -19,7 +19,7 @@ class TextLogger:
     def log_test_result(self, timestamp: str, instance_id: str, instance_type: str,
                        instance_passed: bool, domain_stats: Dict[str, Any],
                        results: Dict[str, Any], median_threshold: float,
-                       best_threshold: float) -> None:
+                       best_threshold: float, ip_mode: str, public_ip: str) -> None:
         """Log detailed test result in text format.
         
         Args:
@@ -31,10 +31,14 @@ class TextLogger:
             results: Raw test results
             median_threshold: Median latency threshold
             best_threshold: Best latency threshold
+            ip_mode: IP assignment mode ('eip' or 'auto-assigned')
+            public_ip: The public IP address of the instance
         """
         with open(self.log_file, "a") as f:
             # Write summary line
-            f.write(f"[{timestamp}] {instance_id}  {instance_type}\n")
+            f.write(f"[{timestamp}] Instance: {instance_id} ({instance_type})\n")
+            f.write(f"IP Mode: {'EIP' if ip_mode == 'eip' else 'Auto-assigned'} ({public_ip})\n")
+            f.write(f"Status: {'PASSED' if instance_passed else 'FAILED'}\n\n")
             
             # Write per-domain best results
             for hostname, stats in domain_stats.items():

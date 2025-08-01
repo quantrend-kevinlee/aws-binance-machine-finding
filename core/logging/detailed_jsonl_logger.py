@@ -26,7 +26,8 @@ class DetailedJSONLLogger:
     
     def log_test_result(self, timestamp: str, instance_id: str, instance_type: str,
                        instance_passed: bool, results: Dict[str, Any], 
-                       median_threshold: float, best_threshold: float) -> None:
+                       median_threshold: float, best_threshold: float,
+                       ip_mode: str, public_ip: str) -> None:
         """Log detailed test result with complete per-IP statistics.
         
         Args:
@@ -37,13 +38,21 @@ class DetailedJSONLLogger:
             results: Raw test results from latency test
             median_threshold: Median latency threshold in microseconds
             best_threshold: Best latency threshold in microseconds
+            ip_mode: IP assignment mode ('eip' or 'auto-assigned')
+            public_ip: The public IP address of the instance
         """
         detailed_entry = {
             "timestamp": timestamp,
             "instance_id": instance_id,
             "instance_type": instance_type,
+            "ip_mode": ip_mode,
+            "public_ip": public_ip,
             "passed": instance_passed,
-            "domains": {}
+            "thresholds": {
+                "median_us": median_threshold,
+                "best_us": best_threshold
+            },
+            "results": {}
         }
         
         # Process each domain
@@ -52,9 +61,7 @@ class DetailedJSONLLogger:
                 # Skip domains with errors for now - could be added if needed
                 continue
             
-            detailed_entry["domains"][hostname] = {
-                "ips": {}
-            }
+            detailed_entry["results"][hostname] = {}
             
             # Process each IP for this domain
             for ip, ip_data in host_data.get("ips", {}).items():
@@ -68,14 +75,13 @@ class DetailedJSONLLogger:
                 # Determine if this IP passed criteria
                 ip_passed = (median <= median_threshold) or (best <= best_threshold)
                 
-                detailed_entry["domains"][hostname]["ips"][ip] = {
+                detailed_entry["results"][hostname][ip] = {
+                    "min": round(best, 2) if best != float("inf") else None,
                     "median": round(median, 2) if median != float("inf") else None,
-                    "best": round(best, 2) if best != float("inf") else None,
-                    "average": round(average, 2) if average != float("inf") else None,
+                    "avg": round(average, 2) if average != float("inf") else None,
                     "p1": round(p1, 2) if p1 != float("inf") else None,
                     "p99": round(p99, 2) if p99 != float("inf") else None,
-                    "max": round(max_val, 2) if max_val != float("inf") else None,
-                    "passed": ip_passed
+                    "max": round(max_val, 2) if max_val != float("inf") else None
                 }
         
         # Append to detailed JSONL file
