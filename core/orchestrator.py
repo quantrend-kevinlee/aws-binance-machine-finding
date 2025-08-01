@@ -10,6 +10,7 @@ from .testing import SSHClient, LatencyTestRunner, ResultProcessor
 from .logging import JSONLLogger, TextLogger, DetailedJSONLLogger
 from .utils import get_current_timestamp, get_log_file_paths, get_run_timestamp, ensure_directory_exists
 from .ip_discovery import load_ip_list
+from .monitoring import MonitoringDeployer
 
 
 class Orchestrator:
@@ -40,6 +41,7 @@ class Orchestrator:
         self.ec2_manager = EC2Manager(config)
         self.pg_manager = PlacementGroupManager(config)
         self.eip_manager = EIPManager(config)
+        self.monitoring_deployer = MonitoringDeployer(config)
         
         # Initialize testing components
         self.ssh_client = SSHClient(config.key_path)
@@ -369,6 +371,23 @@ class Orchestrator:
             instance_id, instance_type, placement_group_name,
             self.config.availability_zone, domain_stats
         ))
+        
+        # Deploy continuous monitoring
+        print("\n[INFO] Deploying continuous monitoring...")
+        
+        # Get instance public IP
+        if self.config.use_eip and eip_allocation_id:
+            instance_ip = self.eip_manager.get_eip_public_ip(eip_allocation_id)
+        else:
+            instance_ip = self.ec2_manager.get_instance_public_ip(instance_id)
+        
+        if instance_ip:
+            if self.monitoring_deployer.deploy_monitoring(instance_id, instance_ip):
+                print("[OK] Continuous monitoring deployed successfully")
+            else:
+                print("[WARN] Failed to deploy monitoring - instance is still qualified")
+        else:
+            print("[WARN] Could not get instance IP for monitoring deployment")
     
     def _handle_failed_instance(self, instance_id: str, placement_group_name: str, 
                                eip_allocation_id: str, eip_name: str) -> None:

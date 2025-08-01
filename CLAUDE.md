@@ -54,6 +54,7 @@ python3 tool_scripts/query_jsonl.py all
    - **testing/**: SSH and latency test execution
    - **logging/**: JSONL and text format logging
    - **ip_discovery/**: IP discovery, validation, and loading with DNS fallback
+   - **monitoring/**: Continuous monitoring deployment and CloudWatch integration
 
 3. **test_instance_latency.py** - User-facing latency testing tool
    - Runs latency tests locally or on remote EC2 instances  
@@ -232,6 +233,7 @@ python3 test_instance_latency.py i-1234567890abcdef0
    - Terminate instances that don't meet criteria
    - Preserve qualified instances and continue searching for more
    - Enable termination protection and stop protection on qualified instances automatically
+   - Deploy continuous monitoring to qualified instances automatically
    - In EIP mode: Both placement groups and EIPs are preserved
    - In Auto-IP mode: Only placement groups are preserved (IPs may change on stop/start)
 
@@ -511,6 +513,80 @@ aws ec2 modify-instance-attribute --instance-id i-abc123 --disable-api-stop
 aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-stop
 ```
 
+### Continuous Monitoring (New Feature)
+
+#### Overview
+
+Qualified instances automatically deploy continuous latency monitoring that:
+- Runs latency tests every 60 seconds
+- Publishes metrics to AWS CloudWatch (required)
+- Optionally stores raw data locally when `--store-raw-data-locally` is specified
+- Enables visualization and alerting
+
+#### How It Works
+
+1. **Automatic Deployment**: When an instance is qualified, the system:
+   - Creates CloudWatch dashboard for the instance (continues if creation fails)
+   - Creates IAM role `BinanceLatencyMonitorRole` with CloudWatch permissions
+   - Attaches role to the instance
+   - Deploys monitoring script via SSH
+   - Sets up systemd service for continuous operation
+
+2. **Metrics Published**: 
+   - Namespace: `BinanceLatency`
+   - Metrics: `TCPHandshake_median`, `TCPHandshake_min`, `TCPHandshake_max`, `TCPHandshake_p1`, `TCPHandshake_p99`, `TCPHandshake_average`
+   - Dimensions: `Domain`, `IP`, `InstanceId`
+
+3. **Local Data Storage** (Optional): Raw results can be stored locally when `--store-raw-data-locally` argument is provided
+
+#### CloudWatch Dashboard Setup
+
+```bash
+# Set up CloudWatch dashboard for a specific instance
+python3 tool_scripts/setup_cloudwatch_dashboard.py --dashboard-name <instance-id>
+
+# Example for instance i-123456
+python3 tool_scripts/setup_cloudwatch_dashboard.py --dashboard-name i-123456
+```
+
+Dashboard features:
+- **Per-instance dashboards**: Each monitored instance gets its own dashboard
+- **Automatic creation**: Dashboards are created automatically when monitoring starts
+- **Non-blocking**: If dashboard creation fails, monitoring continues anyway
+- **Preserves existing**: Existing dashboards are kept as-is, even if structure differs
+- **Instance filtering**: Each dashboard shows only metrics from its specific instance
+
+Dashboard structure:
+- **Average Latency by Domain**: Uses CloudWatch Metrics Insights to aggregate all IPs per domain
+- **Individual domain charts**: Separate chart for each domain showing IP-level details
+- **Dynamic configuration**: Number of charts adjusts based on domains in config.json
+
+#### Manual Monitoring Control
+
+```bash
+# Check monitoring status on instance
+ssh -i ~/.ssh/qtx.pem ec2-user@<PUBLIC_IP> "sudo systemctl status binance-latency-monitor"
+
+# View recent logs
+ssh -i ~/.ssh/qtx.pem ec2-user@<PUBLIC_IP> "sudo journalctl -u binance-latency-monitor -n 100"
+
+# Restart monitoring
+ssh -i ~/.ssh/qtx.pem ec2-user@<PUBLIC_IP> "sudo systemctl restart binance-latency-monitor"
+
+# Stop monitoring
+ssh -i ~/.ssh/qtx.pem ec2-user@<PUBLIC_IP> "sudo systemctl stop binance-latency-monitor"
+```
+
+#### CloudWatch Costs
+
+- Each PutMetricData call costs $0.01 per 1,000 requests
+- Batch sending: All metrics sent after test completion
+- With ~681 IPs × 6 metrics = 4,086 metrics per test cycle
+- Sent in batches of 1,000 metrics = 5 API calls per test cycle
+- ~1,440 test cycles per day (runs continuously with 1-minute wait between tests)
+- 7,200 API calls per day = ~$0.072/day or ~$2.16/month per instance
+- Note: Actual costs may be lower if some IPs fail to connect
+
 ### Monitoring
 
 - **Live Progress**: Console output shows real-time test results
@@ -526,6 +602,7 @@ aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-stop
 | `find_instance.py` | Main entry point - orchestrates the instance finding process<br>IP mode configured via `use_eip` in config.json |
 | `test_instance_latency.py` | Run latency tests locally or on remote instances with beautiful formatted output |
 | `discover_ips.py` | Standalone IP discovery and validation tool (run separately from instance testing) |
+| `run_latency_monitoring.py` | Run continuous latency monitoring locally or deploy to remote instances |
 
 ### Tool Scripts
 
@@ -543,6 +620,7 @@ Located in `tool_scripts/` directory:
 | `test_ip_for_is_fstream.py` | Verify if an IP belongs to fstream-mm.binance.com by comparing WebSocket responses |
 | `test_latency_with_new_auto_ip.py` | Test instance latency after forcing AWS to assign a new auto-assigned public IP |
 | `bind_eip.py` | Bind a specific Elastic IP to an instance and provide SSH commands |
+| `setup_cloudwatch_dashboard.py` | Create per-instance CloudWatch dashboards with domain-based charts |
 
 ### Configuration Files
 
@@ -608,3 +686,4 @@ Located in `tool_scripts/` directory:
 16. **Separated IP Discovery**: IP discovery runs as a standalone process (`discover_ips.py`), not during instance testing, for cleaner separation of concerns
 17. **Continuous Search**: Search continues indefinitely to find multiple qualified instances rather than stopping after the first one
 18. **Automatic Instance Protection**: Qualified instances automatically have both termination and stop protection enabled to prevent accidental deletion or stopping
+19. **Continuous Monitoring**: Qualified instances automatically deploy latency monitoring that publishes metrics to CloudWatch for long-term visualization and alerting
