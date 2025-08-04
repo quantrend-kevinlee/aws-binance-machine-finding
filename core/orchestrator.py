@@ -112,7 +112,7 @@ class Orchestrator:
         else:
             print(f"IP Mode: Auto-assigned - Using subnet's auto-assigned public IPs")
             print(f"         Note: IPs may change if instances are stopped/started")
-        print(f"Latency thresholds: median ≤ {self.config.latency_thresholds.median_us}μs OR best ≤ {self.config.latency_thresholds.best_us}μs")
+        print(f"Latency thresholds: median ≤ {self.config.median_threshold_us}μs OR best ≤ {self.config.best_threshold_us}μs")
         print("="*60)
         
         # Load IP list from file

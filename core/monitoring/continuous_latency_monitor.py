@@ -33,8 +33,8 @@ CLOUDWATCH_NAMESPACE = "BinanceLatency"
 class ContinuousLatencyMonitor:
     def __init__(self, ip_list_file, config_file, instance_id=None, raw_data_dir=None):
         self.running = True
-        self.ip_list = self._load_ip_list(ip_list_file)
         self.config = self._load_config(config_file)
+        self.ip_list = self._load_ip_list(ip_list_file)
         self.instance_id = instance_id or self._get_instance_id()
         
         # CloudWatch setup (required)
@@ -73,13 +73,13 @@ class ContinuousLatencyMonitor:
     def _load_ip_list(self, ip_list_file):
         """Load IP list from file."""
         try:
-            with open(ip_list_file, 'r') as f:
-                data = json.load(f)
-                # Extract domain -> IP list mapping
-                result = {}
-                for domain, info in data.get('domains', {}).items():
-                    result[domain] = list(info.get('ips', {}).keys())
-                return result
+            # Import the shared load_ip_list function
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from ip_discovery import load_ip_list
+            
+            # Load only monitoring domains
+            monitoring_domains = self.config.get('monitoring_domains', [])
+            return load_ip_list(ip_list_file, monitoring_domains) or {}
         except Exception as e:
             print(f"ERROR: Failed to load IP list: {e}")
             return {}

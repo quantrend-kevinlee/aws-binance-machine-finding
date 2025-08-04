@@ -9,9 +9,14 @@ from typing import Dict, List, Optional
 def load_ip_list(ip_list_file: Optional[str] = None, domains: Optional[List[str]] = None) -> Optional[Dict[str, List[str]]]:
     """Load IP list from file with DNS fallback.
     
+    If domains are specified, only IPs for those domains will be loaded from the file.
+    This allows different components to load only the IPs they need (e.g., latency testing
+    only needs latency_test_domains, monitoring only needs monitoring_domains).
+    
     Args:
         ip_list_file: Path to IP list JSON file (optional)
-        domains: List of domains for DNS fallback (optional)
+        domains: List of domains to filter/load. If None, loads all domains from file.
+                Also used for DNS fallback if file is missing.
         
     Returns:
         Dictionary mapping domain names to lists of IPs, or None if loading fails
@@ -23,12 +28,23 @@ def load_ip_list(ip_list_file: Optional[str] = None, domains: Optional[List[str]
             with open(ip_list_file, 'r') as f:
                 ip_data = json.load(f)
             
-            # Extract all IPs from the data
+            # Extract IPs only for requested domains
             ip_list = {}
-            for domain_name, domain_data in ip_data.get("domains", {}).items():
-                ips = list(domain_data.get("ips", {}).keys())
-                if ips:
-                    ip_list[domain_name] = ips
+            all_domains = ip_data.get("domains", {})
+            
+            # If domains specified, filter to only those domains
+            if domains:
+                for domain in domains:
+                    if domain in all_domains:
+                        ips = list(all_domains[domain].get("ips", {}).keys())
+                        if ips:
+                            ip_list[domain] = ips
+            else:
+                # No domains specified, load all
+                for domain_name, domain_data in all_domains.items():
+                    ips = list(domain_data.get("ips", {}).keys())
+                    if ips:
+                        ip_list[domain_name] = ips
             
             if ip_list:
                 return ip_list
