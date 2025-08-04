@@ -7,7 +7,7 @@ from continuous monitoring. Each instance gets its own dashboard with:
 - Average latency by domain (using pre-computed domain averages)
 - Individual charts for each domain showing IP-level performance
 
-The script preserves existing dashboards and continues gracefully on errors.
+The script recreates dashboards if they exist with incompatible structure.
 """
 
 import json
@@ -16,10 +16,6 @@ import boto3
 
 def validate_dashboard_structure(cloudwatch_client, dashboard_name, expected_domains):
     """Validate existing dashboard structure matches current configuration.
-    
-    Note: This validation is informational only. Existing dashboards are
-    preserved even if they don't match the expected structure to avoid
-    disrupting custom configurations.
     
     Returns:
         tuple: (is_valid, error_message)
@@ -85,8 +81,9 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
     
     This function:
     - Checks if a dashboard already exists
-    - If it exists, preserves it regardless of structure
-    - Only creates a new dashboard if none exists
+    - If it exists and matches expected structure, keeps it
+    - If it exists but doesn't match, deletes and recreates it
+    - Creates a new dashboard if none exists
     - Uses pre-computed domain averages for efficient visualization
     
     Args:
@@ -114,12 +111,17 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
             print(f"     URL: {dashboard_url}")
             return True
         else:
-            # Dashboard exists but structure doesn't match
+            # Dashboard exists but structure doesn't match - delete and recreate
             print(f"[WARN] Dashboard '{dashboard_name}' exists but structure doesn't match: {error_msg}")
-            print(f"[INFO] Keeping existing dashboard as-is")
-            dashboard_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#dashboards:name={dashboard_name}"
-            print(f"     URL: {dashboard_url}")
-            return True  # Return success to allow monitoring to continue
+            print(f"[INFO] Deleting old dashboard and creating a new one with correct structure")
+            
+            try:
+                # Delete the existing dashboard
+                cloudwatch_client.delete_dashboards(DashboardNames=[dashboard_name])
+                print(f"[OK] Deleted old dashboard '{dashboard_name}'")
+            except Exception as e:
+                print(f"[ERROR] Failed to delete old dashboard: {e}")
+                # Still try to create the new one by overwriting
             
     except cloudwatch_client.exceptions.ResourceNotFound:
         # Dashboard doesn't exist, create it
