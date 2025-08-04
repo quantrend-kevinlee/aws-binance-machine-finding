@@ -85,7 +85,7 @@ class IPValidator:
         
         if show_progress:
             alive_count = sum(1 for alive, _ in results.values() if alive)
-            print(f"[INFO] Validation complete: {alive_count}/{len(ips)} IPs are alive")
+            print(f"[INFO] Validation complete: {alive_count}/{len(ips)} IPs responded successfully")
         
         return results
     
@@ -111,6 +111,6 @@ class IPValidator:
             
             if show_progress:
                 alive_count = sum(1 for alive, _ in domain_results.values() if alive)
-                print(f"[INFO] {domain}: {alive_count}/{len(ips)} IPs alive")
+                print(f"[INFO] {domain}: {alive_count}/{len(ips)} IPs responded successfully")
         
         return results

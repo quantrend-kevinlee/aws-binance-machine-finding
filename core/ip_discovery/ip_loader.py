@@ -23,7 +23,7 @@ def load_ip_list(ip_list_file: Optional[str] = None, domains: Optional[List[str]
             with open(ip_list_file, 'r') as f:
                 ip_data = json.load(f)
             
-            # Extract all IPs from the data (all IPs are considered active)
+            # Extract all IPs from the data
             ip_list = {}
             for domain_name, domain_data in ip_data.get("domains", {}).items():
                 ips = list(domain_data.get("ips", {}).keys())

@@ -28,10 +28,8 @@
     "monitoring_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",
-        "fapi-mm.binance.com",
         "stream.binance.com",
-        "ws-api.binance.com",
-        "api.binance.com"
+        "ws-api.binance.com"
     ],
     "instance_types": [
         "c8g.medium",
@@ -49,5 +47,6 @@
     "max_instance_init_wait_seconds": 600,
     "latency_test_timeout_scale_per_domain": 150,
     "latency_test_timeout_floor": 180,
-    "ebs_volume_size_gb": 50
+    "ebs_volume_size_gb": 50,
+    "max_ip_consecutive_failures_before_considering_dead": 6
 }

@@ -154,10 +154,18 @@ class ContinuousLatencyMonitor:
         metrics_to_send = []
         
         print(f"\n[INFO] Starting test cycle at {timestamp}")
-        total_ips = sum(len(ips) for ips in self.ip_list.values())
-        print(f"[INFO] Testing {len(self.ip_list)} domains with {total_ips} total IPs")
         
-        for domain in self.config.get('monitoring_domains', []):
+        # Count domains and IPs that will actually be tested
+        monitoring_domains = self.config.get('monitoring_domains', [])
+        domains_to_test = [d for d in monitoring_domains if d in self.ip_list]
+        total_ips_to_test = sum(len(self.ip_list[d]) for d in domains_to_test)
+        
+        print(f"[INFO] Testing {len(domains_to_test)} domains with {total_ips_to_test} IPs")
+        if len(monitoring_domains) > len(domains_to_test):
+            missing = [d for d in monitoring_domains if d not in self.ip_list]
+            print(f"[WARN] Missing IPs for {len(missing)} monitoring domains: {', '.join(missing)}")
+        
+        for domain in monitoring_domains:
             if domain not in self.ip_list:
                 continue
                 
@@ -325,7 +333,12 @@ class ContinuousLatencyMonitor:
         print(f"Instance ID: {self.instance_id}")
         print(f"Wait between tests: {WAIT_BETWEEN_TESTS}s")
         print(f"CloudWatch: Batch sending after test completion")
-        print(f"Monitoring {len(self.ip_list)} domains")
+        
+        # Count domains that will actually be monitored
+        monitoring_domains = self.config.get('monitoring_domains', [])
+        domains_with_ips = [d for d in monitoring_domains if d in self.ip_list]
+        print(f"Monitoring {len(domains_with_ips)}/{len(monitoring_domains)} domains (with IPs available)")
+        
         if self.store_raw_data:
             print(f"Raw data storage: {self.raw_data_dir}")
         

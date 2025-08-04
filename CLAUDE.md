@@ -128,7 +128,8 @@ python3 tool_scripts/query_jsonl.py all
     "ip_list_dir": "./reports/ip_lists",  // Directory for IP list files
     "max_instance_init_wait_seconds": 600,  // Maximum wait time after SSH ready before testing
     "latency_test_timeout_scale_per_domain": 120,  // Timeout scale factor per domain (seconds)
-    "latency_test_timeout_floor": 180         // Minimum timeout floor regardless of domain count (seconds)
+    "latency_test_timeout_floor": 180,         // Minimum timeout floor regardless of domain count (seconds)
+    "max_ip_consecutive_failures_before_considering_dead": 6  // IPs removed after this many consecutive validation failures
 }
 ```
 
@@ -181,7 +182,8 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
    - Queries each domain multiple times per batch
    - Waits 60 seconds between batches to bypass DNS cache
    - Validates IP liveness with TCP connectivity tests
-   - Removes dead IPs automatically
+   - Tracks consecutive validation failures per IP
+   - Removes IPs after exceeding configured failure threshold (default: 6 consecutive failures)
    - Persists live IPs to `reports/ip_lists/ip_list_latest.json`
 
 2. **Integration with Testing**:
@@ -200,7 +202,8 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
     "fstream-mm.binance.com": {
       "ips": {
         "54.65.8.148": {
-          "first_seen": "2025-07-25T10:00:00+08:00"
+          "first_seen": "2025-07-25T10:00:00+08:00",
+          "consecutive_validation_failures": 0
         }
       }
     }
@@ -208,7 +211,7 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
 }
 ```
 
-Note: All IPs in `ip_list_latest.json` are considered alive. Dead IPs are moved to `ip_list_dead.jsonl`.
+Note: IPs are tracked with their consecutive failure count. IPs exceeding `max_ip_consecutive_failures_before_considering_dead` (default: 6) are moved to `ip_list_dead.jsonl`.
 
 ### Usage
 
@@ -651,7 +654,7 @@ Located in `tool_scripts/` directory:
 | `reports/latency_log_*.jsonl` | Test results in JSONL format |
 | `reports/latency_log_*.txt` | Detailed test logs |
 | `reports/ip_lists/ip_list_latest.json` | Latest discovered IP addresses |
-| `reports/ip_lists/ip_list_dead.jsonl` | Historical dead IP records (append-only) |
+| `reports/ip_lists/ip_list_dead.jsonl` | IPs removed after exceeding consecutive failure threshold (append-only) |
 
 ## Troubleshooting
 

@@ -157,3 +157,8 @@ class Config:
     def use_eip(self) -> bool:
         """Whether to use Elastic IPs (True) or auto-assigned IPs (False)."""
         return self._data['use_eip']
+    
+    @property
+    def max_ip_consecutive_failures_before_considering_dead(self) -> int:
+        """Maximum consecutive validation failures before considering an IP dead."""
+        return self._data.get('max_ip_consecutive_failures_before_considering_dead', 6)
