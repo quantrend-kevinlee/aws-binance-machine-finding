@@ -4,7 +4,7 @@ Set up per-instance CloudWatch dashboards for Binance latency monitoring.
 
 This script creates CloudWatch dashboards to visualize latency metrics
 from continuous monitoring. Each instance gets its own dashboard with:
-- Average latency by domain (using Metrics Insights aggregation)
+- Average latency by domain (using pre-computed domain averages)
 - Individual charts for each domain showing IP-level performance
 
 The script preserves existing dashboards and continues gracefully on errors.
@@ -13,7 +13,6 @@ The script preserves existing dashboards and continues gracefully on errors.
 import json
 import argparse
 import boto3
-from datetime import datetime
 
 def validate_dashboard_structure(cloudwatch_client, dashboard_name, expected_domains):
     """Validate existing dashboard structure matches current configuration.
@@ -45,8 +44,13 @@ def validate_dashboard_structure(cloudwatch_client, dashboard_name, expected_dom
         domain_metrics = widgets[0].get('properties', {}).get('metrics', [])
         found_domains = set()
         for metric in domain_metrics:
-            if isinstance(metric, list) and metric:
-                expr = metric[0].get('expression', '')
+            if isinstance(metric, list) and len(metric) >= 3:
+                # Check for domain in dimensions (new format)
+                if isinstance(metric[2], dict) and metric[2].get('Domain') in expected_domains:
+                    found_domains.add(metric[2]['Domain'])
+            elif isinstance(metric, list) and metric:
+                # Check for expression format (old format)
+                expr = metric[0].get('expression', '') if isinstance(metric[0], dict) else ''
                 for domain in expected_domains:
                     if f'Domain="{domain}"' in expr:
                         found_domains.add(domain)
@@ -83,7 +87,7 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
     - Checks if a dashboard already exists
     - If it exists, preserves it regardless of structure
     - Only creates a new dashboard if none exists
-    - Uses CloudWatch Metrics Insights for efficient aggregation
+    - Uses pre-computed domain averages for efficient visualization
     
     Args:
         cloudwatch_client: Boto3 CloudWatch client
@@ -126,14 +130,19 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
     widgets = []
     
     # 1. Average Latency by Domain chart (overview of all domains)
-    # Use CloudWatch Metrics Insights query to avoid metric limits
-    # This aggregates all IPs per domain efficiently without hitting the 500 metric limit
-    # The AVG of averages is valid since all IPs use the same 100-connection sample size
-    domain_metrics = [[{
-        "expression": f'SELECT AVG(TCPHandshake_average) FROM SCHEMA("BinanceLatency", "Domain", IP, InstanceId) WHERE InstanceId = \'{instance_filter}\' GROUP BY "Domain"',
-        "id": "q1",
-        "period": 300
-    }]]
+    # Use pre-computed domain averages to avoid metric limits
+    # These metrics are calculated by the monitoring process
+    domain_metrics = []
+    
+    for i, domain in enumerate(domains):
+        # Use the pre-computed domain average metric
+        domain_metrics.append([
+            "BinanceLatency",
+            "TCPHandshake_average_DomainAvg",
+            "Domain", domain,
+            "InstanceId", instance_filter,
+            { "label": domain }
+        ])
     
     widgets.append({
         "type": "metric",
@@ -276,10 +285,10 @@ def main():
         return 1
     
     region = args.region or config.get('region', 'ap-northeast-1')
-    domains = config.get('latency_test_domains', [])
+    domains = config.get('monitoring_domains', [])
     
     if not domains:
-        print("[ERROR] No domains found in config's latency_test_domains")
+        print("[ERROR] No domains found in config's monitoring_domains")
         return 1
     
     # Create CloudWatch client

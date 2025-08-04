@@ -95,10 +95,17 @@ python3 tool_scripts/query_jsonl.py all
     },
     "latency_test_domains": [
         "fstream-mm.binance.com",
-        "ws-fapi-mm.binance.com",
-        "fapi-mm.binance.com"
+        "ws-fapi-mm.binance.com"
     ],
     "discovery_domains": [
+        "fstream-mm.binance.com",
+        "ws-fapi-mm.binance.com",
+        "fapi-mm.binance.com",
+        "stream.binance.com",
+        "ws-api.binance.com",
+        "api.binance.com"
+    ],
+    "monitoring_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",
         "fapi-mm.binance.com",
@@ -128,15 +135,22 @@ python3 tool_scripts/query_jsonl.py all
 
 ### Binance Domains
 
-Domains are now centrally configured in `config.json` with separate lists for IP discovery and latency testing:
+Domains are now centrally configured in `config.json` with separate lists for different purposes:
 
 ```json
 "latency_test_domains": [
-    "fstream-mm.binance.com",  // Futures stream
-    "ws-fapi-mm.binance.com",  // WebSocket API  
-    "fapi-mm.binance.com"      // Futures REST API
+    "fstream-mm.binance.com",  // Futures stream (critical)
+    "ws-fapi-mm.binance.com"   // WebSocket API (critical)
 ],
 "discovery_domains": [
+    "fstream-mm.binance.com",  // Futures stream
+    "ws-fapi-mm.binance.com",  // WebSocket API
+    "fapi-mm.binance.com",     // Futures REST API
+    "stream.binance.com",      // Spot stream
+    "ws-api.binance.com",      // Spot WebSocket API
+    "api.binance.com"          // Spot REST API
+],
+"monitoring_domains": [
     "fstream-mm.binance.com",  // Futures stream
     "ws-fapi-mm.binance.com",  // WebSocket API
     "fapi-mm.binance.com",     // Futures REST API
@@ -149,6 +163,7 @@ Domains are now centrally configured in `config.json` with separate lists for IP
 **Purpose:**
 - `latency_test_domains`: Domains tested during instance evaluation for pass/fail criteria
 - `discovery_domains`: All domains for IP discovery (can include more domains than tested)
+- `monitoring_domains`: Domains continuously monitored on qualified instances (reduces CloudWatch costs)
 
 ## IP Discovery System
 
@@ -534,8 +549,9 @@ Qualified instances automatically deploy continuous latency monitoring that:
 
 2. **Metrics Published**: 
    - Namespace: `BinanceLatency`
-   - Metrics: `TCPHandshake_median`, `TCPHandshake_min`, `TCPHandshake_max`, `TCPHandshake_p1`, `TCPHandshake_p99`, `TCPHandshake_average`
-   - Dimensions: `Domain`, `IP`, `InstanceId`
+   - IP-level metrics: `TCPHandshake_median`, `TCPHandshake_min`, `TCPHandshake_max`, `TCPHandshake_p1`, `TCPHandshake_p99`, `TCPHandshake_average`
+   - Domain-level metrics: `TCPHandshake_median_DomainAvg`, `TCPHandshake_min_DomainAvg`, `TCPHandshake_max_DomainAvg`, `TCPHandshake_p1_DomainAvg`, `TCPHandshake_p99_DomainAvg`, `TCPHandshake_average_DomainAvg`
+   - Dimensions: `Domain`, `IP`, `InstanceId` (IP-level) or `Domain`, `InstanceId` (domain-level)
 
 3. **Local Data Storage** (Optional): Raw results can be stored locally when `--store-raw-data-locally` argument is provided
 
@@ -557,9 +573,9 @@ Dashboard features:
 - **Instance filtering**: Each dashboard shows only metrics from its specific instance
 
 Dashboard structure:
-- **Average Latency by Domain**: Uses CloudWatch Metrics Insights to aggregate all IPs per domain
+- **Average Latency by Domain**: Uses pre-computed domain averages (calculated locally to avoid CloudWatch metric limits)
 - **Individual domain charts**: Separate chart for each domain showing IP-level details
-- **Dynamic configuration**: Number of charts adjusts based on domains in config.json
+- **Dynamic configuration**: Number of charts adjusts based on monitoring_domains in config.json
 
 #### Manual Monitoring Control
 
@@ -581,10 +597,15 @@ ssh -i ~/.ssh/qtx.pem ec2-user@<PUBLIC_IP> "sudo systemctl stop binance-latency-
 
 - Each PutMetricData call costs $0.01 per 1,000 requests
 - Batch sending: All metrics sent after test completion
-- With ~681 IPs × 6 metrics = 4,086 metrics per test cycle
-- Sent in batches of 1,000 metrics = 5 API calls per test cycle
+- Monitoring only domains in `monitoring_domains` (configurable)
+- Example with 3 domains: ~100 IPs/domain × 3 domains × 6 metrics = ~1,800 IP-level metrics
+- Plus 3 domains × 6 metrics = 18 domain-level metrics
+- Total: ~1,818 metrics per test cycle = 2 API calls per test cycle
+- With 6 domains: ~100 IPs/domain × 6 domains × 6 metrics = ~3,600 IP-level metrics
+- Plus 6 domains × 6 metrics = 36 domain-level metrics
+- Total: ~3,636 metrics per test cycle = 4 API calls per test cycle
 - ~1,440 test cycles per day (runs continuously with 1-minute wait between tests)
-- 7,200 API calls per day = ~$0.072/day or ~$2.16/month per instance
+- Cost estimate: 2-6 API calls × 1,440 = 2,880-8,640 API calls/day = ~$0.03-$0.09/day
 - Note: Actual costs may be lower if some IPs fail to connect
 
 ### Monitoring

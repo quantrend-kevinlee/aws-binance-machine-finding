@@ -157,7 +157,7 @@ class ContinuousLatencyMonitor:
         total_ips = sum(len(ips) for ips in self.ip_list.values())
         print(f"[INFO] Testing {len(self.ip_list)} domains with {total_ips} total IPs")
         
-        for domain in self.config.get('latency_test_domains', []):
+        for domain in self.config.get('monitoring_domains', []):
             if domain not in self.ip_list:
                 continue
                 
@@ -175,6 +175,11 @@ class ContinuousLatencyMonitor:
                 except Exception as e:
                     print(f"[WARN] Failed to test {domain} {ip}: {e} - skipping")
                     continue
+        
+        # Calculate domain-level averages
+        domain_metrics = self._calculate_domain_averages(timestamp, results)
+        if domain_metrics:
+            metrics_to_send.extend(domain_metrics)
         
         # Send all metrics to CloudWatch after test completion
         if metrics_to_send:
@@ -217,6 +222,53 @@ class ContinuousLatencyMonitor:
                 })
         
         return metric_data
+    
+    def _calculate_domain_averages(self, timestamp, results):
+        """Calculate domain-level average metrics across all IPs."""
+        domain_metrics = []
+        
+        for domain, ip_results in results.items():
+            if not ip_results:
+                continue
+            
+            # Collect all values for each metric type across IPs
+            metric_values = {
+                'median': [],
+                'min': [],
+                'max': [],
+                'p1': [],
+                'p99': [],
+                'average': []
+            }
+            
+            for ip, stats in ip_results.items():
+                for stat_name in metric_values:
+                    if stat_name in stats:
+                        metric_values[stat_name].append(float(stats[stat_name]))
+            
+            # Calculate averages for each metric type
+            for stat_name, values in metric_values.items():
+                if values:
+                    avg_value = statistics.mean(values)
+                    
+                    # Create domain-level metric
+                    domain_metrics.append({
+                        'MetricName': f'TCPHandshake_{stat_name}_DomainAvg',
+                        'Dimensions': [
+                            {'Name': 'Domain', 'Value': domain},
+                            {'Name': 'InstanceId', 'Value': self.instance_id}
+                        ],
+                        'Value': avg_value,
+                        'Unit': 'Microseconds',
+                        'Timestamp': timestamp
+                    })
+            
+            # Log domain summary
+            if 'average' in metric_values and metric_values['average']:
+                domain_avg = statistics.mean(metric_values['average'])
+                print(f"[INFO] {domain}: avg={domain_avg:.2f}μs across {len(ip_results)} IPs")
+        
+        return domain_metrics
     
     def _send_metrics_to_cloudwatch(self, metrics):
         """Send all metrics to CloudWatch in batches."""

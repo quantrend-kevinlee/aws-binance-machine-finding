@@ -22,7 +22,6 @@ import json
 import subprocess
 import argparse
 import boto3
-import time
 from typing import Optional, Tuple
 
 
@@ -192,7 +191,7 @@ def run_local_monitoring(config: dict, raw_data_dir: str = None, machine_name: s
     # Prepare config for monitoring
     monitor_config = {
         'region': config['region'],
-        'latency_test_domains': config['latency_test_domains']
+        'monitoring_domains': config['monitoring_domains']
     }
     
     # Create temporary directory for monitoring

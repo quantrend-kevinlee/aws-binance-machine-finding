@@ -341,7 +341,7 @@ class MonitoringDeployer:
             # Copy config file
             config_content = json.dumps({
                 'region': self.config.region,
-                'latency_test_domains': self.config.latency_test_domains
+                'monitoring_domains': self.config.monitoring_domains
             }, indent=2)
             
             cmd = f"echo '{config_content}' > {self.monitor_dir}/config.json"

@@ -32,7 +32,7 @@ class Config:
                 'region', 'availability_zone', 'subnet_id', 'security_group_id',
                 'key_name', 'key_path', 'placement_group_name_base', 'eip_name_base',
                 'use_eip', 'latency_thresholds', 'instance_types', 'report_dir',
-                'latency_test_domains', 'discovery_domains', 'ip_list_dir',
+                'latency_test_domains', 'discovery_domains', 'monitoring_domains', 'ip_list_dir',
                 'max_instance_init_wait_seconds', 'latency_test_timeout_scale_per_domain', 'latency_test_timeout_floor',
                 'ebs_volume_size_gb'
             ]
@@ -142,6 +142,11 @@ class Config:
     def discovery_domains(self) -> List[str]:
         """List of domains for IP discovery (may include more domains than tested)."""
         return self._data['discovery_domains']
+    
+    @property
+    def monitoring_domains(self) -> List[str]:
+        """List of domains to monitor continuously."""
+        return self._data['monitoring_domains']
     
     @property
     def ebs_volume_size_gb(self) -> int:
