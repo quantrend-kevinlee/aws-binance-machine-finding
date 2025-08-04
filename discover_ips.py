@@ -12,9 +12,11 @@ Usage:
 import sys
 import time
 import signal
+from datetime import datetime
 
 from core.config import Config
 from core.ip_discovery import IPCollector, IPValidator, IPPersistence
+from core.constants import UTC_PLUS_8
 
 
 class IPDiscoveryTool:
@@ -28,10 +30,6 @@ class IPDiscoveryTool:
         self.running = True
         self.collector = None
         self.ip_data = None
-        
-        # In-memory failure counts for efficiency
-        self.ip_consecutive_failure_counts = {}  # {domain: {ip: failure_count}}
-        self.max_failures_before_dead = config.max_ip_consecutive_failures_before_considering_dead
         
         # Set up signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -52,8 +50,6 @@ class IPDiscoveryTool:
         # Load existing IP data
         self.ip_data = self.persistence.load_latest()
         
-        # Initialize in-memory failure counts from persisted data
-        self.ip_consecutive_failure_counts = self.persistence.get_ip_failure_counts(self.ip_data)
         
         # Extract existing IPs for the collector (discovery domains only)
         existing_ips = {}
@@ -139,71 +135,53 @@ class IPDiscoveryTool:
         print(f"[INFO] Validating {sum(len(ips) for ips in discovery_ips.values())} IPs from {len(discovery_ips)} discovery domains")
         validation_results = self.validator.validate_domain_ips(discovery_ips, show_progress=False)
         
-        # Track IPs to remove
-        ips_to_remove_as_dead = {}
-        summary_stats = {"alive": 0, "failed": 0, "dead": 0}
+        # Track statistics
+        summary_stats = {"alive": 0, "failed": 0}
         
         for domain, results in validation_results.items():
-            domain_stats = {"alive": 0, "failed": 0, "dead": 0}
-            domain_ips_to_remove = set()
+            domain_stats = {"alive": 0, "failed": 0}
             
             for ip, (is_alive, latency) in results.items():
-                # Update failure count
-                failure_count = self.persistence.update_ip_failure_count(
-                    self.ip_data, domain, ip, is_alive
-                )
-                
-                # Update in-memory counts
-                if domain not in self.ip_consecutive_failure_counts:
-                    self.ip_consecutive_failure_counts[domain] = {}
-                
                 if is_alive:
-                    self.ip_consecutive_failure_counts[domain][ip] = 0
+                    # Update last_validated timestamp for successful validation
+                    self.persistence.update_ip_validation_time(self.ip_data, domain, ip)
                     domain_stats["alive"] += 1
                     summary_stats["alive"] += 1
                 else:
-                    self.ip_consecutive_failure_counts[domain][ip] = failure_count
+                    # Failed validation - don't update timestamp
                     domain_stats["failed"] += 1
                     summary_stats["failed"] += 1
-                    
-                    # Check if exceeded failure threshold
-                    if failure_count >= self.max_failures_before_dead:
-                        domain_ips_to_remove.add(ip)
-                        domain_stats["dead"] += 1
-                        summary_stats["dead"] += 1
-                        print(f"    - {domain} {ip}: Exceeded {self.max_failures_before_dead} consecutive failures, marking as dead")
-            
-            # Store IPs to remove for this domain
-            if domain_ips_to_remove:
-                ips_to_remove_as_dead[domain] = domain_ips_to_remove
             
             # Print domain summary
-            print(f"  - {domain}: {domain_stats['alive']} alive, {domain_stats['failed']} failed" + 
-                  (f", {domain_stats['dead']} marked as dead" if domain_stats['dead'] > 0 else ""))
-        
-        # Update global validation timestamp
-        self.persistence.update_validation_timestamp(self.ip_data)
-        
-        # Move dead IPs to history
-        if ips_to_remove_as_dead:
-            moved = self.persistence.remove_dead_ips(
-                self.ip_data, 
-                ips_to_remove_as_dead, 
-                reason=f"exceeded_{self.max_failures_before_dead}_consecutive_failures"
-            )
-            print(f"\n[INFO] Moved {moved} IPs to history (exceeded {self.max_failures_before_dead} consecutive failures)")
-            
-            # Clean up in-memory counts for removed IPs
-            for domain, ips in ips_to_remove_as_dead.items():
-                for ip in ips:
-                    self.ip_consecutive_failure_counts[domain].pop(ip, None)
+            print(f"  - {domain}: {domain_stats['alive']} alive, {domain_stats['failed']} failed")
         
         # Save updated IP data
         self.persistence.save_and_sync(self.ip_data)
         
+        # Check for dead IPs based on time threshold
+        current_time = datetime.now(UTC_PLUS_8)
+        dead_threshold_seconds = 3600  # 1 hour
+        dead_count = 0
+        
+        for domain in self.config.discovery_domains:
+            domain_data = self.ip_data.get("domains", {}).get(domain, {})
+            for ip, ip_info in domain_data.get("ips", {}).items():
+                last_validated = ip_info.get("last_validated")
+                if last_validated:
+                    try:
+                        last_validated_dt = datetime.fromisoformat(last_validated)
+                        time_since_validation = (current_time - last_validated_dt).total_seconds()
+                        
+                        if time_since_validation > dead_threshold_seconds:
+                            dead_count += 1
+                            minutes_dead = int(time_since_validation / 60)
+                            print(f"    - {domain} {ip}: Dead (not validated for {minutes_dead} minutes)")
+                    except:
+                        pass
+        
         # Print validation summary
         print(f"\n[Validation Summary] Total: {summary_stats['alive']} alive, " +
-              f"{summary_stats['failed']} failed, {summary_stats['dead']} removed as dead")
+              f"{summary_stats['failed']} failed, {dead_count} dead (>1 hour)")
         print("[INFO] Validation complete\n")
     
     def _print_session_summary(self):
@@ -220,18 +198,35 @@ class IPDiscoveryTool:
             domain_total = len(domain_ips)
             discovery_total += domain_total
             
-            # Count IPs by failure status
-            failure_counts = self.ip_consecutive_failure_counts.get(domain, {})
-            failed_ips = [ip for ip, count in failure_counts.items() if count > 0]
+            # Count IPs by time-based status
+            current_time = datetime.now(UTC_PLUS_8)
+            dead_threshold_seconds = 3600  # 1 hour
+            warning_threshold_seconds = 2700  # 45 minutes
             
-            if failed_ips:
-                print(f"  - {domain}: {domain_total} IPs ({len(failed_ips)} with failures)")
-                # Show IPs close to being removed
-                close_to_dead = [ip for ip, count in failure_counts.items() 
-                               if count >= self.max_failures_before_dead - 2 and count < self.max_failures_before_dead]
-                if close_to_dead:
-                    for ip in close_to_dead:
-                        print(f"      Warning: {ip} has {failure_counts[ip]} consecutive failures")
+            dead_ips = []
+            warning_ips = []
+            
+            for ip, ip_info in domain_ips.items():
+                last_validated = ip_info.get("last_validated")
+                if last_validated:
+                    try:
+                        last_validated_dt = datetime.fromisoformat(last_validated)
+                        time_since_validation = (current_time - last_validated_dt).total_seconds()
+                        
+                        if time_since_validation > dead_threshold_seconds:
+                            dead_ips.append((ip, int(time_since_validation / 60)))
+                        elif time_since_validation > warning_threshold_seconds:
+                            warning_ips.append((ip, int(time_since_validation / 60)))
+                    except:
+                        pass
+            
+            if dead_ips or warning_ips:
+                print(f"  - {domain}: {domain_total} IPs ({len(dead_ips)} dead, {len(warning_ips)} warning)")
+                # Show IPs close to being dead
+                for ip, minutes in warning_ips[:3]:  # Show first 3 warnings
+                    print(f"      Warning: {ip} not validated for {minutes} minutes")
+                if len(warning_ips) > 3:
+                    print(f"      ... and {len(warning_ips) - 3} more approaching dead status")
             else:
                 print(f"  - {domain}: {domain_total} IPs (all healthy)")
         
@@ -245,7 +240,7 @@ class IPDiscoveryTool:
         if total_file_domains > len(self.config.discovery_domains):
             print(f"Total in IP file: {total_file_ips} IPs across {total_file_domains} domains")
         
-        print(f"Failure threshold: {self.max_failures_before_dead} consecutive failures")
+        print(f"Dead IP threshold: 1 hour without successful validation")
         print("="*60)
 
 

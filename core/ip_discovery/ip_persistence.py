@@ -22,7 +22,6 @@ class IPPersistence:
         self.ip_lists_dir = ip_list_dir
         ensure_directory_exists(self.ip_lists_dir)
         self.latest_file = os.path.join(self.ip_lists_dir, "ip_list_latest.json")
-        self.dead_file = os.path.join(self.ip_lists_dir, "ip_list_dead.jsonl")  # JSONL format
         
         # In-memory state
         self.active_data = None  # Loaded from disk
@@ -41,9 +40,9 @@ class IPPersistence:
                     self.active_data = json.load(f)
             except (json.JSONDecodeError, IOError) as e:
                 print(f"[WARN] Failed to load IP list: {e}")
-                self.active_data = {"last_updated": None, "last_validated": None, "domains": {}}
+                self.active_data = {"last_updated": None, "domains": {}}
         else:
-            self.active_data = {"last_updated": None, "last_validated": None, "domains": {}}
+            self.active_data = {"last_updated": None, "domains": {}}
     
     def load_latest(self) -> Dict[str, Any]:
         """Get the current active IP data.
@@ -125,25 +124,6 @@ class IPPersistence:
         with self.lock:
             self._sync_active_ips()
     
-    def _append_dead_ip(self, domain: str, ip: str, metadata: Dict[str, Any]) -> None:
-        """Append a single dead IP record to the JSONL file.
-        
-        Args:
-            domain: Domain name
-            ip: IP address
-            metadata: Dead IP metadata
-        """
-        record = {
-            "domain": domain,
-            "ip": ip,
-            "timestamp": datetime.now(UTC_PLUS_8).isoformat(),
-            **metadata
-        }
-        
-        # Append to JSONL file
-        with open(self.dead_file, 'a') as f:
-            f.write(json.dumps(record) + '\n')
-    
     def get_domain_ips(self, ip_data: Dict[str, Any], domain: str) -> Dict[str, Dict[str, Any]]:
         """Get IPs for a specific domain.
         
@@ -174,15 +154,15 @@ class IPPersistence:
         
         now = datetime.now(UTC_PLUS_8).isoformat()
         
-        # Get or create IP entry with failure tracking
+        # Get or create IP entry with time-based tracking
         ip_entry = ip_data["domains"][domain]["ips"].get(ip, {
             "first_seen": now,
-            "consecutive_validation_failures": 0
+            "last_validated": now  # Initialize with current time for new IPs
         })
         
-        # Ensure backward compatibility - add missing field to existing entries
-        if "consecutive_validation_failures" not in ip_entry:
-            ip_entry["consecutive_validation_failures"] = 0
+        # Ensure new field exists for migration compatibility
+        if "last_validated" not in ip_entry:
+            ip_entry["last_validated"] = ip_entry.get("first_seen", now)
         
         ip_data["domains"][domain]["ips"][ip] = ip_entry
         
@@ -190,110 +170,15 @@ class IPPersistence:
         if ip_data is self.active_data:
             self.dirty = True
     
-    def update_validation_timestamp(self, ip_data: Dict[str, Any]) -> None:
-        """Update the global validation timestamp.
+    def update_ip_validation_time(self, ip_data: Dict[str, Any], domain: str, ip: str) -> None:
+        """Update the validation timestamp for a specific IP.
         
-        Args:
-            ip_data: IP data structure to update
-        """
-        ip_data["last_validated"] = datetime.now(UTC_PLUS_8).isoformat()
-        
-        # If updating internal data, mark as dirty
-        if ip_data is self.active_data:
-            self.dirty = True
-    
-    def remove_dead_ips(self, ip_data: Dict[str, Any], dead_ips: Dict[str, Set[str]], reason: str = "validation_failed") -> int:
-        """Move specified IPs to dead history and remove from active list.
-        
-        This is called when IPs have exceeded the maximum consecutive failure threshold
-        and are considered permanently unreachable.
-        
-        Args:
-            ip_data: IP data structure to update
-            dead_ips: Dictionary of domain -> set of IPs to remove
-            reason: Reason for removal (e.g., "exceeded_6_consecutive_failures")
-            
-        Returns:
-            Number of IPs moved to dead history
-        """
-        moved = 0
-        now = datetime.now(UTC_PLUS_8).isoformat()
-        
-        with self.lock:
-            for domain, domain_data in ip_data.get("domains", {}).items():
-                ips = domain_data.get("ips", {})
-                domain_dead_ips = dead_ips.get(domain, set())
-                
-                # Move each IP exceeding failure threshold to history
-                for ip in domain_dead_ips:
-                    if ip not in ips:
-                        continue  # IP doesn't exist, skip
-                        
-                    ip_info = ips[ip]
-                    # Calculate alive duration from first_seen to last global validation
-                    first_seen = ip_info.get("first_seen", now)
-                    last_validated = ip_data.get("last_validated", now)
-                    try:
-                        first_dt = datetime.fromisoformat(first_seen)
-                        # Use global last_validated as the last known alive time
-                        last_dt = datetime.fromisoformat(last_validated)
-                        duration_hours = (last_dt - first_dt).total_seconds() / 3600
-                    except:
-                        duration_hours = 0
-                    
-                    # Append to removal history
-                    metadata = {
-                        "first_seen": first_seen,
-                        "last_validated": last_validated,
-                        "alive_duration_hours": round(duration_hours, 2),
-                        "death_reason": reason
-                    }
-                    self._append_dead_ip(domain, ip, metadata)
-                    
-                    # Remove from active list
-                    del ips[ip]
-                    moved += 1
-                    
-                    # Mark data as dirty if it's internal
-                    if ip_data is self.active_data:
-                        self.dirty = True
-        
-        if moved > 0:
-            print(f"[IP Discovery] Moved {moved} IPs exceeding failure threshold to {os.path.basename(self.dead_file)}")
-        
-        return moved
-    
-    def get_all_active_ips(self, ip_data: Dict[str, Any]) -> Dict[str, list]:
-        """Get all IPs grouped by domain.
-        
-        Note: All IPs in the persistence file are returned, regardless of failure count.
-        IPs are only removed when they exceed the configured failure threshold.
-        
-        Args:
-            ip_data: IP data structure
-            
-        Returns:
-            Dictionary of domain -> list of IPs
-        """
-        result = {}
-        for domain, domain_data in ip_data.get("domains", {}).items():
-            ips = list(domain_data.get("ips", {}).keys())
-            if ips:
-                result[domain] = ips
-        return result
-    
-    def update_ip_failure_count(self, ip_data: Dict[str, Any], domain: str, ip: str, 
-                              is_successful: bool) -> int:
-        """Update IP consecutive failure count based on validation result.
+        This is called when an IP successfully responds to validation.
         
         Args:
             ip_data: IP data structure to update
             domain: Domain name
-            ip: IP address
-            is_successful: Whether the validation was successful
-            
-        Returns:
-            Current consecutive failure count after update
+            ip: IP address that was successfully validated
         """
         # Ensure IP exists
         if domain not in ip_data.get("domains", {}) or \
@@ -301,38 +186,55 @@ class IPPersistence:
             # IP doesn't exist, create it first
             self.update_ip(ip_data, domain, ip)
         
-        ip_entry = ip_data["domains"][domain]["ips"][ip]
-        
-        if is_successful:
-            # Reset failure count on success
-            ip_entry["consecutive_validation_failures"] = 0
-        else:
-            # Increment failure count
-            ip_entry["consecutive_validation_failures"] = \
-                ip_entry.get("consecutive_validation_failures", 0) + 1
+        # Update last_validated timestamp
+        ip_data["domains"][domain]["ips"][ip]["last_validated"] = datetime.now(UTC_PLUS_8).isoformat()
         
         # If updating internal data, mark as dirty
         if ip_data is self.active_data:
             self.dirty = True
-            
-        return ip_entry["consecutive_validation_failures"]
     
-    def get_ip_failure_counts(self, ip_data: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
-        """Get failure counts for all IPs.
+    def get_all_active_ips(self, ip_data: Dict[str, Any], include_dead: bool = False) -> Dict[str, list]:
+        """Get all active IPs grouped by domain.
+        
+        IPs are considered dead if they haven't been validated for over 1 hour.
         
         Args:
             ip_data: IP data structure
+            include_dead: If True, include all IPs regardless of validation time
             
         Returns:
-            Dictionary of domain -> {ip -> failure_count}
+            Dictionary of domain -> list of IPs (only live IPs unless include_dead=True)
         """
         result = {}
+        current_time = datetime.now(UTC_PLUS_8)
+        dead_threshold_seconds = 3600  # 1 hour
+        
         for domain, domain_data in ip_data.get("domains", {}).items():
-            domain_counts = {}
+            domain_ips = []
+            
             for ip, ip_info in domain_data.get("ips", {}).items():
-                domain_counts[ip] = ip_info.get("consecutive_validation_failures", 0)
-            if domain_counts:
-                result[domain] = domain_counts
+                if include_dead:
+                    domain_ips.append(ip)
+                else:
+                    # Check if IP is still alive based on last validation time
+                    last_validated = ip_info.get("last_validated")
+                    if last_validated:
+                        try:
+                            last_validated_dt = datetime.fromisoformat(last_validated)
+                            time_since_validation = (current_time - last_validated_dt).total_seconds()
+                            
+                            if time_since_validation <= dead_threshold_seconds:
+                                domain_ips.append(ip)
+                        except:
+                            # If parsing fails, include the IP
+                            domain_ips.append(ip)
+                    else:
+                        # No validation timestamp, include the IP
+                        domain_ips.append(ip)
+            
+            if domain_ips:
+                result[domain] = domain_ips
+                
         return result
     
     def shutdown(self) -> None:
@@ -348,16 +250,13 @@ class IPPersistence:
                 with open(self.latest_file, 'r') as f:
                     data = json.load(f)
                     total_ips = sum(len(d.get("ips", {})) for d in data.get("domains", {}).values())
-                    print(f"[IP Discovery] Verified {total_ips} active IPs saved to disk")
+                    # Count live vs dead IPs
+                    active_ips_data = self.get_all_active_ips(data, include_dead=False)
+                    live_count = sum(len(ips) for ips in active_ips_data.values())
+                    dead_count = total_ips - live_count
+                    
+                    print(f"[IP Discovery] Verified {total_ips} total IPs saved to disk ({live_count} live, {dead_count} dead)")
             except Exception as e:
-                print(f"[ERROR] Failed to verify active IP file: {e}")
-        
-        if os.path.exists(self.dead_file):
-            try:
-                with open(self.dead_file, 'r') as f:
-                    line_count = sum(1 for line in f if line.strip())
-                    print(f"[IP Discovery] Verified {line_count} removed IP records saved to disk")
-            except Exception as e:
-                print(f"[ERROR] Failed to verify dead IP file: {e}")
+                print(f"[ERROR] Failed to verify IP file: {e}")
         
         print("[IP Discovery] Shutdown complete")
