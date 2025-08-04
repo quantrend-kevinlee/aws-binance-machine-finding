@@ -3,8 +3,13 @@
 This module handles the complete deployment of monitoring infrastructure:
 1. CloudWatch dashboard setup (non-fatal if fails)
 2. IAM role creation for CloudWatch metrics
-3. Monitoring script deployment via SSH
-4. Systemd service configuration
+3. Monitoring script and IP list deployment via SCP for optimal performance
+4. Systemd service configuration with proper restart handling
+
+Features:
+- SCP for file transfer
+- Simplified IP format for monitoring
+- Self-contained monitoring script
 """
 
 import os
@@ -184,10 +189,19 @@ class MonitoringDeployer:
             
             instance = response['Reservations'][0]['Instances'][0]
             if 'IamInstanceProfile' in instance:
-                print(f"[WARN] Instance already has IAM profile: {instance['IamInstanceProfile']['Arn']}")
-                # Could optionally replace it here
+                existing_profile_arn = instance['IamInstanceProfile']['Arn']
+                existing_profile_name = existing_profile_arn.split('/')[-1]
+                
+                if existing_profile_name == profile_name:
+                    print(f"[OK] Instance already has correct IAM profile: {existing_profile_arn}")
+                    return True
+                else:
+                    print(f"[WARN] Instance has different IAM profile: {existing_profile_arn}")
+                    print(f"[INFO] Expected profile: {profile_name}")
+                    # For now, continue with existing profile
+                    return True
             
-            # Associate the profile
+            # Associate the profile (only if no existing profile)
             self.ec2_manager.client.associate_iam_instance_profile(
                 IamInstanceProfile={'Name': profile_name},
                 InstanceId=instance_id
@@ -292,7 +306,7 @@ class MonitoringDeployer:
             return False
         
         # Step 6: Set up systemd service
-        if not self._setup_systemd_service(instance_ip):
+        if not self._setup_systemd_service(instance_ip, instance_id):
             return False
         
         print(f"[OK] Monitoring deployed successfully to {instance_id}")
@@ -301,42 +315,44 @@ class MonitoringDeployer:
     def _deploy_files_via_ssh(self, instance_ip: str) -> bool:
         """Deploy monitoring files to instance via SSH."""
         try:
-            # Create directory structure
+            # Create directory structure and install dependencies
             commands = [
                 f"sudo mkdir -p {self.monitor_dir}",
                 f"sudo mkdir -p /var/log/binance-latency",
                 f"sudo chown ec2-user:ec2-user {self.monitor_dir}",
-                f"sudo chown ec2-user:ec2-user /var/log/binance-latency"
+                f"sudo chown ec2-user:ec2-user /var/log/binance-latency",
+                "sudo yum update -y",
+                "sudo yum install -y python3-pip",
+                "sudo pip3 install boto3"
             ]
             
             for cmd in commands:
-                stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
+                stdout, stderr, exit_code = self.ssh_client.run_command(instance_ip, cmd)
                 if exit_code != 0:
                     print(f"[ERROR] Command failed: {cmd}")
                     print(f"        stderr: {stderr}")
                     return False
             
-            # Copy monitoring script
+            # Copy monitoring script using SCP for better reliability
             monitor_script_path = os.path.join(
                 os.path.dirname(__file__), 
                 'continuous_latency_monitor.py'
             )
             
-            with open(monitor_script_path, 'r') as f:
-                script_content = f.read()
-            
-            # Write script to remote
             remote_script_path = f"{self.monitor_dir}/monitor.py"
-            escaped_content = script_content.replace("'", "'\"'\"'")
-            cmd = f"echo '{escaped_content}' > {remote_script_path}"
-            stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
-            if exit_code != 0:
-                print(f"[ERROR] Failed to write monitoring script: {stderr}")
-                return False
             
-            # Make executable
-            cmd = f"chmod +x {remote_script_path}"
-            self.ssh_client.execute_command(instance_ip, cmd)
+            # Use SCP to transfer the monitoring script
+            if self._scp_file_to_instance(monitor_script_path, remote_script_path, instance_ip):
+                print("[OK] Monitoring script transferred via SCP")
+                
+                # Make executable
+                cmd = f"chmod +x {remote_script_path}"
+                stdout, stderr, exit_code = self.ssh_client.run_command(instance_ip, cmd)
+                if exit_code != 0:
+                    print(f"[WARN] Failed to make script executable: {stderr}")
+            else:
+                print("[ERROR] Failed to transfer monitoring script via SCP")
+                return False
             
             # Copy config file
             config_content = json.dumps({
@@ -345,20 +361,40 @@ class MonitoringDeployer:
             }, indent=2)
             
             cmd = f"echo '{config_content}' > {self.monitor_dir}/config.json"
-            self.ssh_client.execute_command(instance_ip, cmd)
+            self.ssh_client.run_command(instance_ip, cmd)
             
-            # Copy IP list
+            # Copy IP list using SCP for better performance and reliability
             ip_list_path = os.path.join(self.config.ip_list_dir, "ip_list_latest.json")
             if os.path.exists(ip_list_path):
-                with open(ip_list_path, 'r') as f:
-                    ip_list_content = f.read()
+                # Create simplified IP format for monitoring (remove metadata for efficiency)
+                simplified_ip_list = self._create_simplified_ip_list(ip_list_path)
                 
-                escaped_content = ip_list_content.replace("'", "'\"'\"'")
-                cmd = f"echo '{escaped_content}' > {self.monitor_dir}/ip_list_latest.json"
-                stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
-                if exit_code != 0:
-                    print(f"[ERROR] Failed to write IP list: {stderr}")
-                    return False
+                if simplified_ip_list:
+                    # Create temporary simplified IP list file
+                    temp_ip_file = "/tmp/ip_list_monitoring.json"
+                    try:
+                        with open(temp_ip_file, 'w') as f:
+                            json.dump(simplified_ip_list, f, indent=2)
+                        
+                        # Use SCP to transfer the file
+                        if self._scp_file_to_instance(temp_ip_file, f"{self.monitor_dir}/ip_list_latest.json", instance_ip):
+                            print("[OK] IP list transferred via SCP")
+                        else:
+                            print("[ERROR] Failed to transfer IP list via SCP")
+                            return False
+                            
+                    finally:
+                        # Clean up temporary file
+                        if os.path.exists(temp_ip_file):
+                            os.unlink(temp_ip_file)
+                else:
+                    print("[WARN] No monitoring domains found in IP list, creating empty file")
+                    # Create empty IP list file on remote
+                    cmd = f"echo '{{}}' > {self.monitor_dir}/ip_list_latest.json"
+                    stdout, stderr, exit_code = self.ssh_client.run_command(instance_ip, cmd)
+                    if exit_code != 0:
+                        print(f"[ERROR] Failed to create empty IP list: {stderr}")
+                        return False
             
             print("[OK] Monitoring files deployed")
             return True
@@ -367,7 +403,7 @@ class MonitoringDeployer:
             print(f"[ERROR] Failed to deploy files: {e}")
             return False
     
-    def _setup_systemd_service(self, instance_ip: str) -> bool:
+    def _setup_systemd_service(self, instance_ip: str, instance_id: str) -> bool:
         """Set up systemd service for monitoring."""
         try:
             # Create systemd service file
@@ -378,7 +414,8 @@ After=network.target
 [Service]
 Type=simple
 User=ec2-user
-ExecStart=/usr/bin/python3 {self.monitor_dir}/monitor.py --ip-list {self.monitor_dir}/ip_list_latest.json --config {self.monitor_dir}/config.json
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/usr/bin/python3 {self.monitor_dir}/monitor.py --ip-list {self.monitor_dir}/ip_list_latest.json --config {self.monitor_dir}/config.json --instance-id {instance_id}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -388,10 +425,9 @@ StandardError=journal
 WantedBy=multi-user.target
 """
             
-            # Write service file
-            escaped_content = service_content.replace("'", "'\"'\"'")
-            cmd = f"echo '{escaped_content}' | sudo tee /etc/systemd/system/{self.service_name}.service"
-            stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
+            # Write service file using heredoc for better handling of special characters
+            cmd = f"sudo tee /etc/systemd/system/{self.service_name}.service << 'EOF'\n{service_content}\nEOF"
+            stdout, stderr, exit_code = self.ssh_client.run_command(instance_ip, cmd)
             if exit_code != 0:
                 print(f"[ERROR] Failed to create service file: {stderr}")
                 return False
@@ -404,7 +440,7 @@ WantedBy=multi-user.target
             ]
             
             for cmd in commands:
-                stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
+                stdout, stderr, exit_code = self.ssh_client.run_command(instance_ip, cmd)
                 if exit_code != 0:
                     print(f"[ERROR] Command failed: {cmd}")
                     print(f"        stderr: {stderr}")
@@ -412,7 +448,7 @@ WantedBy=multi-user.target
             
             # Check service status
             cmd = f"sudo systemctl status {self.service_name}"
-            stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
+            stdout, stderr, exit_code = self.ssh_client.run_command(instance_ip, cmd)
             print(f"[INFO] Service status:\n{stdout}")
             
             print("[OK] Systemd service configured and started")
@@ -422,34 +458,86 @@ WantedBy=multi-user.target
             print(f"[ERROR] Failed to setup systemd service: {e}")
             return False
     
-    def check_monitoring_status(self, instance_ip: str) -> Dict[str, Any]:
-        """Check monitoring status on instance.
+    def _create_simplified_ip_list(self, ip_list_path: str) -> dict:
+        """Create simplified IP list format for monitoring (domain -> IP list).
+        
+        This removes metadata and timestamps, keeping only the essential IP mappings
+        needed for monitoring, similar to test_instance_latency.py approach.
         
         Returns:
-            Dict with status information
+            Dict mapping domain names to IP lists, or empty dict if error
         """
         try:
-            # Check service status
-            cmd = f"sudo systemctl is-active {self.service_name}"
-            stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
-            service_active = stdout.strip() == "active"
+            with open(ip_list_path, 'r') as f:
+                ip_data = json.load(f)
             
-            # Check recent logs
-            cmd = f"sudo journalctl -u {self.service_name} -n 50 --no-pager"
-            stdout, stderr, exit_code = self.ssh_client.execute_command(instance_ip, cmd)
+            # Get monitoring domains from config
+            monitoring_domains = self.config.monitoring_domains
+            simplified_list = {}
             
-            # Check for local data files
-            cmd = f"ls -la /var/log/binance-latency/"
-            files_stdout, _, _ = self.ssh_client.execute_command(instance_ip, cmd)
+            # Handle full metadata format from discover_ips.py
+            if 'domains' in ip_data:
+                all_domains = ip_data.get('domains', {})
+                
+                for domain in monitoring_domains:
+                    if domain in all_domains:
+                        # Extract just the IP addresses (keys from the IPs dict)
+                        ips = list(all_domains[domain].get('ips', {}).keys())
+                        if ips:
+                            simplified_list[domain] = ips
+            else:
+                # Already simplified format - just filter to monitoring domains
+                for domain in monitoring_domains:
+                    if domain in ip_data and isinstance(ip_data[domain], list):
+                        simplified_list[domain] = ip_data[domain]
             
-            return {
-                "service_active": service_active,
-                "recent_logs": stdout,
-                "data_files": files_stdout
-            }
+            print(f"[INFO] Created simplified IP list with {sum(len(ips) for ips in simplified_list.values())} IPs across {len(simplified_list)} domains")
+            return simplified_list
             
         except Exception as e:
-            return {
-                "error": str(e),
-                "service_active": False
-            }
+            print(f"[ERROR] Failed to create simplified IP list: {e}")
+            return {}
+    
+    def _scp_file_to_instance(self, local_file: str, remote_file: str, instance_ip: str) -> bool:
+        """Transfer file to instance using SCP for better performance.
+        
+        Args:
+            local_file: Local file path
+            remote_file: Remote file path
+            instance_ip: Target instance IP
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import subprocess
+            
+            # Build SCP command
+            scp_cmd = [
+                "scp",
+                "-i", self.config.key_path,
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "LogLevel=ERROR",
+                local_file,
+                f"ec2-user@{instance_ip}:{remote_file}"
+            ]
+            
+            result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
+            
+            if result.returncode == 0:
+                file_size = os.path.getsize(local_file)
+                print(f"[OK] SCP transfer successful ({file_size} bytes)")
+                return True
+            else:
+                print(f"[ERROR] SCP failed with exit code {result.returncode}")
+                if result.stderr:
+                    print(f"        stderr: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("[ERROR] SCP transfer timed out after 120 seconds")
+            return False
+        except Exception as e:
+            print(f"[ERROR] SCP transfer failed: {e}")
+            return False

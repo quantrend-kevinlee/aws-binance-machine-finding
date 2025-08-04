@@ -177,7 +177,7 @@ def main():
         print(f"[INFO] Running locally: {test_command}")
     else:
         # For remote execution, deploy the IP list to the instance
-        # Use a temporary file to avoid shell escaping issues
+        # Use temporary file and SCP for reliable file transfer
         with open('/tmp/ip_list_deploy.json', 'w') as f:
             json.dump(ip_list, f)
         

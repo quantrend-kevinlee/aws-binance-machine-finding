@@ -371,10 +371,8 @@ class Orchestrator:
         new_name = f"Qualified_{timestamp}_{int(self.config.median_threshold_us)}/{int(self.config.best_threshold_us)}"
         self.ec2_manager.update_instance_name(instance_id, new_name)
         
-        # Enable termination protection for qualified instances
-        self.ec2_manager.enable_termination_protection(instance_id)
-        
         # Enable stop protection for qualified instances
+        # Note: Stop protection prevents both stop AND termination via console/CLI/API
         self.ec2_manager.enable_stop_protection(instance_id)
         
         print(self.result_processor.format_qualified_report(
@@ -474,7 +472,7 @@ class Orchestrator:
                     auto_ip = self.ec2_manager.get_instance_public_ip(instance_id)
                     print(f"     Auto-assigned IP: {auto_ip}")
             print("\nKeep these instances running for production use.")
-            print("Termination and stop protection have been enabled on all qualified instances.")
+            print("Stop protection has been enabled on all qualified instances.")
             if self.config.use_eip:
                 print("Both placement groups and EIPs are preserved for qualified instances.")
             else:

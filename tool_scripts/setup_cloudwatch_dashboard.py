@@ -7,12 +7,17 @@ from continuous monitoring. Each instance gets its own dashboard with:
 - Average latency by domain (using pre-computed domain averages)
 - Individual charts for each domain showing IP-level performance
 
+Key features:
+- Shows all IPs (up to CloudWatch's 500 limit per chart)
+- Automatic dashboard structure validation and recreation if needed
+
 The script recreates dashboards if they exist with incompatible structure.
 """
 
 import json
 import argparse
 import boto3
+import os
 
 def validate_dashboard_structure(cloudwatch_client, dashboard_name, expected_domains):
     """Validate existing dashboard structure matches current configuration.
@@ -56,17 +61,21 @@ def validate_dashboard_structure(cloudwatch_client, dashboard_name, expected_dom
             return False, f"Dashboard missing domains in overview chart: {', '.join(missing_domains)}"
         
         # Check individual IP charts
-        expected_titles = {f"Average Latency by IP - {domain}" for domain in expected_domains}
-        found_titles = set()
+        # Accept both old and new title formats for backward compatibility
+        found_domains_in_charts = set()
         
         for widget in widgets[1:]:  # Skip first widget
             title = widget.get('properties', {}).get('title', '')
             if title:
-                found_titles.add(title)
+                # Extract domain from various title formats
+                for domain in expected_domains:
+                    if f" - {domain}" in title:
+                        found_domains_in_charts.add(domain)
+                        break
         
-        missing_titles = expected_titles - found_titles
-        if missing_titles:
-            return False, f"Dashboard missing IP charts for: {', '.join([t.split(' - ')[1] for t in missing_titles])}"
+        missing_domains_in_charts = set(expected_domains) - found_domains_in_charts
+        if missing_domains_in_charts:
+            return False, f"Dashboard missing IP charts for: {', '.join(missing_domains_in_charts)}"
         
         return True, None
         
@@ -74,6 +83,39 @@ def validate_dashboard_structure(cloudwatch_client, dashboard_name, expected_dom
         return True, None  # Dashboard doesn't exist, which is fine
     except Exception as e:
         return False, f"Error validating dashboard: {str(e)}"
+
+
+def _get_domain_ip_counts():
+    """Get IP counts per domain from IP list file if available.
+    
+    Returns:
+        dict: Domain to IP count mapping
+    """
+    try:
+        # Try to find IP list file
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ip_list_path = os.path.join(script_dir, "reports", "ip_lists", "ip_list_latest.json")
+        
+        if not os.path.exists(ip_list_path):
+            return {}
+            
+        with open(ip_list_path, 'r') as f:
+            ip_data = json.load(f)
+            
+        counts = {}
+        if 'domains' in ip_data:
+            # Full metadata format
+            for domain, data in ip_data.get('domains', {}).items():
+                counts[domain] = len(data.get('ips', {}))
+        else:
+            # Simplified format
+            for domain, ips in ip_data.items():
+                if isinstance(ips, list):
+                    counts[domain] = len(ips)
+                    
+        return counts
+    except:
+        return {}
 
 
 def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains, instance_filter=None):
@@ -96,6 +138,9 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
     # Use provided instance filter or default to dashboard name
     if instance_filter is None:
         instance_filter = dashboard_name
+        
+    # Try to load IP counts for warning purposes
+    ip_counts = _get_domain_ip_counts()
         
     # Check if dashboard already exists
     try:
@@ -176,6 +221,12 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
         row = (i // 2) + 1  # Start from row 1 (row 0 is domain chart)
         col = (i % 2) * 12   # 0 or 12 (2 columns)
         
+        # Show all IPs (CloudWatch will automatically limit to 500)
+        metrics_expression = [
+            [ { "expression": f'SEARCH(\'{{BinanceLatency,Domain,IP,InstanceId}} MetricName="TCPHandshake_average" Domain="{domain}" InstanceId="{instance_filter}"\', \'Average\', 300)', "id": "e1" } ]
+        ]
+        title = f"Average Latency by IP - {domain}"
+        
         widgets.append({
             "type": "metric",
             "x": col,
@@ -183,17 +234,11 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
             "width": 12,
             "height": 6,
             "properties": {
-                "metrics": [
-                    [{
-                        "expression": f'SEARCH(\'{{BinanceLatency,Domain,IP,InstanceId}} MetricName="TCPHandshake_average" Domain="{domain}" InstanceId="{instance_filter}"\', \'Average\', 300)',
-                        "label": "",
-                        "id": "e1"
-                    }]
-                ],
+                "metrics": metrics_expression,
                 "view": "timeSeries",
                 "stacked": False,
                 "region": region,
-                "title": f"Average Latency by IP - {domain}",
+                "title": title,
                 "period": 300,
                 "yAxis": {
                     "left": {
@@ -229,35 +274,39 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
 def create_custom_metric_queries(cloudwatch_client):
     """Create example custom metric queries."""
     
-    print("\nExample CloudWatch Insights queries:")
+    print("\nExample CloudWatch Metrics Insights queries (for real-time analysis within last 3 hours):")
     print("-" * 60)
     
     queries = [
         {
-            "name": "Average latency by IP",
+            "name": "Top 10 IPs by average latency (last 3 hours)",
             "query": """
-                fields @timestamp, @message
-                | filter Namespace = "BinanceLatency"
-                | stats avg(TCPHandshake_median) by IP
-                | sort avg desc
+                SELECT AVG(TCPHandshake_average) 
+                FROM BinanceLatency 
+                WHERE InstanceId = 'YOUR_INSTANCE_ID'
+                GROUP BY IP, Domain
+                ORDER BY AVG() DESC
+                LIMIT 10
             """
         },
         {
-            "name": "Latency trends over time",
+            "name": "Average latency by domain (last 3 hours)",
             "query": """
-                fields @timestamp, TCPHandshake_median, Domain, IP
-                | filter Namespace = "BinanceLatency"
-                | stats avg(TCPHandshake_median) by bin(5m)
+                SELECT AVG(TCPHandshake_average) 
+                FROM BinanceLatency 
+                WHERE InstanceId = 'YOUR_INSTANCE_ID'
+                GROUP BY Domain
             """
         },
         {
-            "name": "Worst performing IPs",
+            "name": "Worst performing IPs across all domains (last 3 hours)",
             "query": """
-                fields @timestamp, IP, Domain, TCPHandshake_p99
-                | filter Namespace = "BinanceLatency"
-                | filter TCPHandshake_p99 > 150
-                | sort TCPHandshake_p99 desc
-                | limit 20
+                SELECT AVG(TCPHandshake_average) 
+                FROM BinanceLatency 
+                WHERE InstanceId = 'YOUR_INSTANCE_ID' AND TCPHandshake_average > 200
+                GROUP BY IP, Domain
+                ORDER BY AVG() DESC
+                LIMIT 20
             """
         }
     ]
@@ -265,14 +314,32 @@ def create_custom_metric_queries(cloudwatch_client):
     for query in queries:
         print(f"\n{query['name']}:")
         print(query['query'])
+    
+    print("\n\nNote: CloudWatch Metrics Insights can only query the last 3 hours of data.")
+    print("For historical analysis beyond 3 hours, use SEARCH expressions or GetMetricData API.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Set up CloudWatch dashboards")
+    parser = argparse.ArgumentParser(
+        description="Set up CloudWatch dashboards for Binance latency monitoring",
+        epilog="""
+Examples:
+  # Dashboard for instance i-123456 (dashboard name = instance ID)
+  %(prog)s --dashboard-name i-123456
+  
+  # Custom dashboard name for specific instance
+  %(prog)s --dashboard-name my-trading-server --instance-filter i-123456
+  
+  # Multiple dashboards for same instance with different names
+  %(prog)s --dashboard-name prod-dashboard --instance-filter i-123456
+  %(prog)s --dashboard-name test-dashboard --instance-filter i-123456
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument('--dashboard-name', required=True, 
-                       help='Dashboard name (usually instance ID or custom name)')
+                       help='Dashboard name (if --instance-filter not specified, this is also the instance ID)')
     parser.add_argument('--instance-filter', 
-                       help='Instance ID/name to filter metrics (defaults to dashboard-name)')
+                       help='Instance ID to filter metrics for (defaults to --dashboard-name)')
     parser.add_argument('--config', default='config.json', help='Config file path')
     parser.add_argument('--region', help='AWS region (overrides config)')
     
@@ -300,6 +367,7 @@ def main():
     if args.instance_filter and args.instance_filter != args.dashboard_name:
         print(f"Filtering metrics for instance: {args.instance_filter}")
     print(f"Domains to monitor: {', '.join(domains)}")
+    print(f"IP filtering: Show all IPs (up to CloudWatch's 500 limit)")
     print("-" * 60)
     
     # Create or validate dashboard

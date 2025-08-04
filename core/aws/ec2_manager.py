@@ -247,29 +247,6 @@ class EC2Manager:
             print(f"[WARN] Could not get instance status: {e}")
             return {"status": "unknown"}
     
-    def enable_termination_protection(self, instance_id: str) -> bool:
-        """Enable termination protection for an instance.
-        
-        Args:
-            instance_id: EC2 instance ID
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            self.client.modify_instance_attribute(
-                InstanceId=instance_id,
-                DisableApiTermination={'Value': True}
-            )
-            print(f"[OK] Enabled termination protection for instance {instance_id}")
-            return True
-        except ClientError as e:
-            print(f"[ERROR] Failed to enable termination protection: {e}")
-            return False
-        except Exception as e:
-            print(f"[ERROR] Unexpected error enabling termination protection: {e}")
-            return False
-    
     def enable_stop_protection(self, instance_id: str) -> bool:
         """Enable stop protection for an instance.
         

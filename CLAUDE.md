@@ -164,7 +164,7 @@ Domains are now centrally configured in `config.json` with separate lists for di
 
 -   `latency_test_domains`: Domains tested during instance evaluation for pass/fail criteria
 -   `discovery_domains`: All domains for IP discovery (can include more domains than tested)
--   `monitoring_domains`: Domains continuously monitored on qualified instances (reduces CloudWatch costs)
+-   `monitoring_domains`: Domains continuously monitored on qualified instances
 
 ## IP Discovery System
 
@@ -250,14 +250,14 @@ python3 test_instance_latency.py i-1234567890abcdef0
     - SSH to instance and deploy test script
     - Use pre-discovered IPs from `ip_list_latest.json`
     - Perform 1,000 TCP handshakes per IP
-    - Calculate comprehensive statistics: median, best (min), average, p1, p99, and max latencies
+    - Calculate comprehensive statistics including median, best (min), and average latencies
 
 4. **Instance Evaluation**
 
     - Check if instance meets latency criteria (qualified instance)
     - Terminate instances that don't meet criteria
     - Preserve qualified instances and continue searching for more
-    - Enable termination protection and stop protection on qualified instances automatically
+    - Enable stop protection on qualified instances automatically (prevents both stop and termination)
     - Deploy continuous monitoring to qualified instances automatically
     - In EIP mode: Both placement groups and EIPs are preserved
     - In Auto-IP mode: Only placement groups are preserved (IPs may change on stop/start)
@@ -516,16 +516,14 @@ This is useful when testing different instances with temporary public IPs.
 
 ### Manual Cleanup
 
-Qualified instances are preserved when found with both termination and stop protection enabled. To remove:
+Qualified instances are preserved when found with stop protection enabled. To remove:
 
 ```bash
-# First disable stop protection (if you need to stop it first)
+# Disable stop protection (required before stopping or terminating)
+# Note: Stop protection prevents both stop AND termination operations
 aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-stop
 
-# Then disable termination protection
-aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-termination
-
-# Finally terminate instance
+# Now you can terminate the instance
 aws ec2 terminate-instances --instance-ids i-abc123
 
 # Delete placement group (after instance terminates)
@@ -537,38 +535,28 @@ python3 tool_scripts/cleanup_orphaned_placement_groups.py
 
 ### Instance Protection
 
-Qualified instances automatically have both termination protection and stop protection enabled to prevent accidental deletion or stopping.
-
-#### Termination Protection
-
--   Prevents termination via console, CLI, or API
--   Must be manually disabled before terminating the instance
--   Does not prevent instance-initiated shutdown (if configured)
+Qualified instances automatically have stop protection enabled to prevent accidental deletion.
 
 #### Stop Protection
 
--   Prevents stopping the instance via console, CLI, or API
--   Must be manually disabled before stopping the instance
+-   **Prevents BOTH stopping and termination** via console, CLI, or API
+-   Must be manually disabled before stopping or terminating the instance
 -   Does not prevent instance-initiated shutdown from within the OS
 -   Helps preserve valuable low-latency instances that require continuous operation
 
 To manually manage protection:
 
 ```bash
-# Enable termination protection
-aws ec2 modify-instance-attribute --instance-id i-abc123 --disable-api-termination
-
-# Disable termination protection
-aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-termination
-
-# Enable stop protection
+# Enable stop protection (prevents both stop and termination)
 aws ec2 modify-instance-attribute --instance-id i-abc123 --disable-api-stop
 
-# Disable stop protection
+# Disable stop protection (required before stop or termination)
 aws ec2 modify-instance-attribute --instance-id i-abc123 --no-disable-api-stop
 ```
 
-### Continuous Monitoring (New Feature)
+Note: According to AWS documentation, stop protection prevents both stop AND termination operations through the API/console/CLI, making separate termination protection redundant.
+
+### Continuous Monitoring
 
 #### Overview
 
@@ -592,8 +580,8 @@ Qualified instances automatically deploy continuous latency monitoring that:
 2. **Metrics Published**:
 
     - Namespace: `BinanceLatency`
-    - IP-level metrics: `TCPHandshake_median`, `TCPHandshake_min`, `TCPHandshake_max`, `TCPHandshake_p1`, `TCPHandshake_p99`, `TCPHandshake_average`
-    - Domain-level metrics: `TCPHandshake_median_DomainAvg`, `TCPHandshake_min_DomainAvg`, `TCPHandshake_max_DomainAvg`, `TCPHandshake_p1_DomainAvg`, `TCPHandshake_p99_DomainAvg`, `TCPHandshake_average_DomainAvg`
+    - IP-level metrics: `TCPHandshake_average`
+    - Domain-level metrics: `TCPHandshake_average_DomainAvg`
     - Dimensions: `Domain`, `IP`, `InstanceId` (IP-level) or `Domain`, `InstanceId` (domain-level)
 
 3. **Local Data Storage** (Optional): Raw results can be stored locally when `--store-raw-data-locally` argument is provided
@@ -601,11 +589,20 @@ Qualified instances automatically deploy continuous latency monitoring that:
 #### CloudWatch Dashboard Setup
 
 ```bash
-# Set up CloudWatch dashboard for a specific instance
+# Set up CloudWatch dashboard for a specific instance (shows all IPs)
+# Note: When --instance-filter is not specified, it defaults to the --dashboard-name value
 python3 tool_scripts/setup_cloudwatch_dashboard.py --dashboard-name <instance-id>
 
-# Example for instance i-123456
+# Example for instance i-123456 (dashboard name = instance ID)
 python3 tool_scripts/setup_cloudwatch_dashboard.py --dashboard-name i-123456
+
+# Create custom dashboard for specific instance (different dashboard name than instance ID)
+# Use --instance-filter to specify which instance's metrics to show
+python3 tool_scripts/setup_cloudwatch_dashboard.py --dashboard-name my-custom-dashboard --instance-filter i-123456
+
+# Multiple dashboards for the same instance with different names
+python3 tool_scripts/setup_cloudwatch_dashboard.py --dashboard-name prod-dashboard --instance-filter i-123456
+python3 tool_scripts/setup_cloudwatch_dashboard.py --dashboard-name test-dashboard --instance-filter i-123456
 ```
 
 Dashboard features:
@@ -615,11 +612,14 @@ Dashboard features:
 -   **Non-blocking**: If dashboard creation fails, monitoring continues anyway
 -   **Preserves existing**: Existing dashboards are kept as-is, even if structure differs
 -   **Instance filtering**: Each dashboard shows only metrics from its specific instance
+-   **Comprehensive view**: Shows all IPs (up to CloudWatch's 500 limit per chart)
 
 Dashboard structure:
 
 -   **Average Latency by Domain**: Uses pre-computed domain averages (calculated locally to avoid CloudWatch metric limits)
--   **Individual domain charts**: Separate chart for each domain showing IP-level details
+-   **Individual domain charts**: Separate chart for each domain showing IP-level performance
+    - Shows all IPs (CloudWatch automatically limits to 500 metrics per chart)
+    - Displays average latency over 5-minute periods
 -   **Dynamic configuration**: Number of charts adjusts based on monitoring_domains in config.json
 
 #### Manual Monitoring Control
@@ -643,14 +643,11 @@ ssh -i ~/.ssh/qtx.pem ec2-user@<PUBLIC_IP> "sudo systemctl stop binance-latency-
 -   Each PutMetricData call costs $0.01 per 1,000 requests
 -   Batch sending: All metrics sent after test completion
 -   Monitoring only domains in `monitoring_domains` (configurable)
--   Example with 3 domains: ~100 IPs/domain × 3 domains × 6 metrics = ~1,800 IP-level metrics
--   Plus 3 domains × 6 metrics = 18 domain-level metrics
--   Total: ~1,818 metrics per test cycle = 2 API calls per test cycle
--   With 6 domains: ~100 IPs/domain × 6 domains × 6 metrics = ~3,600 IP-level metrics
--   Plus 6 domains × 6 metrics = 36 domain-level metrics
--   Total: ~3,636 metrics per test cycle = 4 API calls per test cycle
+-   Example with 4 domains: ~200 IPs/domain × 4 domains × 1 metric = ~800 IP-level metrics
+-   Plus 4 domains × 1 metric = 4 domain-level metrics
+-   Total: ~804 metrics per test cycle = 1 API call per test cycle
 -   ~1,440 test cycles per day (runs continuously with 1-minute wait between tests)
--   Cost estimate: 2-6 API calls × 1,440 = 2,880-8,640 API calls/day = ~$0.03-$0.09/day
+-   Cost estimate: 1 API call × 1,440 = 1,440 API calls/day = ~$0.01/day
 -   Note: Actual costs may be lower if some IPs fail to connect
 
 ### Monitoring
@@ -686,7 +683,7 @@ Located in `tool_scripts/` directory:
 | `test_ip_for_is_fstream.py`            | Verify if an IP belongs to fstream-mm.binance.com by comparing WebSocket responses |
 | `test_latency_with_new_auto_ip.py`     | Test instance latency after forcing AWS to assign a new auto-assigned public IP    |
 | `bind_eip.py`                          | Bind a specific Elastic IP to an instance and provide SSH commands                 |
-| `setup_cloudwatch_dashboard.py`        | Create per-instance CloudWatch dashboards with domain-based charts                 |
+| `setup_cloudwatch_dashboard.py`        | Create per-instance CloudWatch dashboards showing all IP latency metrics                |
 
 ### Configuration Files
 
@@ -753,5 +750,5 @@ Located in `tool_scripts/` directory:
 15. **Flexible IP Assignment**: System supports both EIP mode and auto-assigned IP mode (configured via `use_eip` in config.json)
 16. **Separated IP Discovery**: IP discovery runs as a standalone process (`discover_ips.py`), not during instance testing, for cleaner separation of concerns
 17. **Continuous Search**: Search continues indefinitely to find multiple qualified instances rather than stopping after the first one
-18. **Automatic Instance Protection**: Qualified instances automatically have both termination and stop protection enabled to prevent accidental deletion or stopping
+18. **Automatic Instance Protection**: Qualified instances automatically have stop protection enabled (prevents both stop and termination)
 19. **Continuous Monitoring**: Qualified instances automatically deploy latency monitoring that publishes metrics to CloudWatch for long-term visualization and alerting

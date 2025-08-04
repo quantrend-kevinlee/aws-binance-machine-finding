@@ -3,12 +3,15 @@
 Continuous latency monitoring daemon for qualified EC2 instances.
 
 This script runs continuously, performing latency tests and publishing metrics to CloudWatch.
-Key features:
-- Tests latency to all configured Binance domains
+Features:
+- Self-contained IP loading (no core module dependencies)
+- Supports both simplified IP format and full metadata format
+- Tests latency to configured monitoring domains only  
 - Batches all metrics and sends after test completion (efficient API usage)
-- Publishes 6 metrics per IP: median, min, max, p1, p99, average
+- Publishes average metric per IP
 - Optionally stores raw data locally when --store-raw-data-locally is specified
 - Gracefully handles failed IPs without stopping the test cycle
+- Designed for deployment via SCP for reliable file transfer
 """
 
 import json
@@ -71,17 +74,64 @@ class ContinuousLatencyMonitor:
             print("[INFO] Raw data storage disabled")
         
     def _load_ip_list(self, ip_list_file):
-        """Load IP list from file."""
+        """Load IP list from file - self-contained, no core module dependencies."""
         try:
-            # Import the shared load_ip_list function
-            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from ip_discovery import load_ip_list
-            
-            # Load only monitoring domains
+            # Load monitoring domains from config
             monitoring_domains = self.config.get('monitoring_domains', [])
-            return load_ip_list(ip_list_file, monitoring_domains) or {}
+            
+            # Try to load IP list directly from file (self-contained approach)
+            if not os.path.exists(ip_list_file):
+                print(f"[ERROR] IP list file not found: {ip_list_file}")
+                return {}
+            
+            with open(ip_list_file, 'r') as f:
+                file_content = f.read().strip()
+            
+            if not file_content:
+                print(f"[ERROR] IP list file is empty: {ip_list_file}")
+                return {}
+                
+            ip_data = json.loads(file_content)
+            
+            # Handle both simplified format (domain->IP list) and full metadata format
+            if 'domains' in ip_data:
+                # Full metadata format from discover_ips.py
+                print("[INFO] Loading IPs from metadata format")
+                ip_list = {}
+                all_domains = ip_data.get('domains', {})
+                
+                # Filter to only monitoring domains and extract active IPs
+                for domain in monitoring_domains:
+                    if domain in all_domains:
+                        # Extract IPs (keys from the IPs dict)
+                        ips = list(all_domains[domain].get('ips', {}).keys())
+                        if ips:
+                            ip_list[domain] = ips
+                            print(f"[INFO] Loaded {len(ips)} IPs for {domain}")
+                
+            else:
+                # Simplified format (domain -> IP list) from test scripts
+                print("[INFO] Loading IPs from simplified format")
+                ip_list = {}
+                
+                # Filter to only monitoring domains
+                for domain in monitoring_domains:
+                    if domain in ip_data:
+                        ips = ip_data[domain]
+                        if isinstance(ips, list) and ips:
+                            ip_list[domain] = ips
+                            print(f"[INFO] Loaded {len(ips)} IPs for {domain}")
+            
+            if not ip_list:
+                print(f"[WARN] No IPs found for monitoring domains: {monitoring_domains}")
+                
+            return ip_list
+            
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Failed to parse IP list JSON: {e}")
+            return {}
         except Exception as e:
-            print(f"ERROR: Failed to load IP list: {e}")
+            print(f"[ERROR] Failed to load IP list: {e}")
             return {}
     
     def _load_config(self, config_file):
@@ -134,17 +184,9 @@ class ContinuousLatencyMonitor:
         if not latencies:
             return None
         
-        # Calculate statistics
-        sorted_latencies = sorted(latencies)
-        n = len(sorted_latencies)
-        
+        # Only calculate average since that's all we upload to CloudWatch
         return {
-            "median": statistics.median(sorted_latencies),
-            "min": sorted_latencies[0],
-            "max": sorted_latencies[-1],
-            "p1": sorted_latencies[int(n * 0.01)],
-            "p99": sorted_latencies[min(int(n * 0.99), n-1)],
-            "average": statistics.mean(sorted_latencies)
+            "average": statistics.mean(latencies)
         }
     
     def run_test_cycle(self):
@@ -208,26 +250,25 @@ class ContinuousLatencyMonitor:
         """Prepare metrics for batch sending."""
         metric_data = []
         
-        # Create metric data for each statistic
-        for stat_name in ['median', 'min', 'max', 'p1', 'p99', 'average']:
-            if stat_name in stats:
-                value = float(stats[stat_name])
-                # Validate value is within CloudWatch limits
-                if value < 0 or value > 1e20:  # CloudWatch has limits on values
-                    print(f"[WARN] Skipping metric {stat_name} with invalid value: {value}")
-                    continue
-                    
-                metric_data.append({
-                    'MetricName': f'TCPHandshake_{stat_name}',
-                    'Dimensions': [
-                        {'Name': 'Domain', 'Value': domain},
-                        {'Name': 'IP', 'Value': ip},
-                        {'Name': 'InstanceId', 'Value': self.instance_id}
-                    ],
-                    'Value': value,
-                    'Unit': 'Microseconds',
-                    'Timestamp': timestamp
-                })
+        # Send average metric per IP
+        if 'average' in stats:
+            value = float(stats['average'])
+            # Validate value is within CloudWatch limits
+            if value < 0 or value > 1e20:  # CloudWatch has limits on values
+                print(f"[WARN] Skipping metric average with invalid value: {value}")
+                return metric_data
+                
+            metric_data.append({
+                'MetricName': 'TCPHandshake_average',
+                'Dimensions': [
+                    {'Name': 'Domain', 'Value': domain},
+                    {'Name': 'IP', 'Value': ip},
+                    {'Name': 'InstanceId', 'Value': self.instance_id}
+                ],
+                'Value': value,
+                'Unit': 'Microseconds',
+                'Timestamp': timestamp
+            })
         
         return metric_data
     
@@ -239,42 +280,32 @@ class ContinuousLatencyMonitor:
             if not ip_results:
                 continue
             
-            # Collect all values for each metric type across IPs
-            metric_values = {
-                'median': [],
-                'min': [],
-                'max': [],
-                'p1': [],
-                'p99': [],
-                'average': []
-            }
+            # Collect average values across IPs
+            average_values = []
             
             for ip, stats in ip_results.items():
-                for stat_name in metric_values:
-                    if stat_name in stats:
-                        metric_values[stat_name].append(float(stats[stat_name]))
+                if 'average' in stats:
+                    average_values.append(float(stats['average']))
             
-            # Calculate averages for each metric type
-            for stat_name, values in metric_values.items():
-                if values:
-                    avg_value = statistics.mean(values)
-                    
-                    # Create domain-level metric
-                    domain_metrics.append({
-                        'MetricName': f'TCPHandshake_{stat_name}_DomainAvg',
-                        'Dimensions': [
-                            {'Name': 'Domain', 'Value': domain},
-                            {'Name': 'InstanceId', 'Value': self.instance_id}
-                        ],
-                        'Value': avg_value,
-                        'Unit': 'Microseconds',
-                        'Timestamp': timestamp
-                    })
+            # Calculate domain average
+            if average_values:
+                avg_value = statistics.mean(average_values)
+                
+                # Create domain-level metric
+                domain_metrics.append({
+                    'MetricName': 'TCPHandshake_average_DomainAvg',
+                    'Dimensions': [
+                        {'Name': 'Domain', 'Value': domain},
+                        {'Name': 'InstanceId', 'Value': self.instance_id}
+                    ],
+                    'Value': avg_value,
+                    'Unit': 'Microseconds',
+                    'Timestamp': timestamp
+                })
             
             # Log domain summary
-            if 'average' in metric_values and metric_values['average']:
-                domain_avg = statistics.mean(metric_values['average'])
-                print(f"[INFO] {domain}: avg={domain_avg:.2f}μs across {len(ip_results)} IPs")
+            if average_values:
+                print(f"[INFO] {domain}: avg={avg_value:.2f}μs across {len(ip_results)} IPs")
         
         return domain_metrics
     

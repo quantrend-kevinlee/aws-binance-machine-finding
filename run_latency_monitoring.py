@@ -3,10 +3,17 @@
 Run continuous latency monitoring locally or on remote EC2 instances.
 
 This tool:
-1. For local: runs monitoring directly with CloudWatch publishing
-2. For remote: deploys monitoring script and sets up systemd service
+1. For local: runs monitoring directly with CloudWatch publishing using simplified IP format
+2. For remote: deploys monitoring script and sets up systemd service via SCP transfer  
 3. Creates per-instance CloudWatch dashboards (continues on failure)
 4. Provides manual control over monitoring deployment
+5. Creates simplified IP lists for efficient monitoring (removes metadata overhead)
+
+Features:
+- Simplified IP format for efficient processing
+- Self-contained deployment
+- SCP-based file transfer
+- Compatible with multiple IP list formats
 
 Dashboard creation is non-fatal - monitoring continues even if dashboard
 setup fails to ensure metrics are still collected.
@@ -202,8 +209,10 @@ def run_local_monitoring(config: dict, raw_data_dir: str = None, machine_name: s
     with open(os.path.join(monitor_dir, "config.json"), 'w') as f:
         json.dump(monitor_config, f, indent=2)
     
-    # Copy IP list
-    subprocess.run(['cp', ip_list_file, os.path.join(monitor_dir, "ip_list_latest.json")])
+    # Create simplified IP list for monitoring (like test_instance_latency.py approach)
+    simplified_ip_list = _create_simplified_ip_list_for_monitoring(ip_list_file, config['monitoring_domains'])
+    with open(os.path.join(monitor_dir, "ip_list_latest.json"), 'w') as f:
+        json.dump(simplified_ip_list, f, indent=2)
     
     # Get monitoring script path
     monitor_script = os.path.join(
@@ -294,6 +303,49 @@ def deploy_remote_monitoring(instance_id: str, config: dict, no_service: bool = 
         print(f"ssh -i {config['key_path']} ec2-user@{public_ip} 'sudo systemctl stop binance-latency-monitor'")
     
     return True
+
+
+def _create_simplified_ip_list_for_monitoring(ip_list_file: str, monitoring_domains: list) -> dict:
+    """Create simplified IP list format for monitoring (domain -> IP list).
+    
+    This function follows the same approach as test_instance_latency.py,
+    removing metadata and timestamps to keep only essential IP mappings.
+    
+    Args:
+        ip_list_file: Path to the full IP list file
+        monitoring_domains: List of domains to include
+        
+    Returns:
+        Dict mapping domain names to IP lists
+    """
+    try:
+        with open(ip_list_file, 'r') as f:
+            ip_data = json.load(f)
+        
+        simplified_list = {}
+        
+        # Handle full metadata format from discover_ips.py
+        if 'domains' in ip_data:
+            all_domains = ip_data.get('domains', {})
+            
+            for domain in monitoring_domains:
+                if domain in all_domains:
+                    # Extract just the IP addresses (keys from the IPs dict)
+                    ips = list(all_domains[domain].get('ips', {}).keys())
+                    if ips:
+                        simplified_list[domain] = ips
+        else:
+            # Already simplified format - just filter to monitoring domains
+            for domain in monitoring_domains:
+                if domain in ip_data and isinstance(ip_data[domain], list):
+                    simplified_list[domain] = ip_data[domain]
+        
+        print(f"[INFO] Created simplified IP list with {sum(len(ips) for ips in simplified_list.values())} IPs across {len(simplified_list)} domains")
+        return simplified_list
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to create simplified IP list: {e}")
+        return {}
 
 
 def main():
