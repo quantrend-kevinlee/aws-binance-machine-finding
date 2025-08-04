@@ -613,13 +613,16 @@ Dashboard features:
 -   **Preserves existing**: Existing dashboards are kept as-is, even if structure differs
 -   **Instance filtering**: Each dashboard shows only metrics from its specific instance
 -   **Comprehensive view**: Shows all IPs (up to CloudWatch's 500 limit per chart)
+-   **Outlier filtering**: Uses tm99 (trimmed mean 99%) to automatically filter per-IP outliers
 
 Dashboard structure:
 
 -   **Average Latency by Domain**: Uses pre-computed domain averages (calculated locally to avoid CloudWatch metric limits)
 -   **Individual domain charts**: Separate chart for each domain showing IP-level performance
     - Shows all IPs (CloudWatch automatically limits to 500 metrics per chart)
-    - Displays average latency over 5-minute periods
+    - Uses tm99 statistic to filter the top 1% of outliers per IP
+    - Each IP's outliers are filtered based on its own historical distribution
+    - Displays trimmed average latency over 5-minute periods
 -   **Dynamic configuration**: Number of charts adjusts based on monitoring_domains in config.json
 
 #### Manual Monitoring Control
@@ -683,7 +686,7 @@ Located in `tool_scripts/` directory:
 | `test_ip_for_is_fstream.py`            | Verify if an IP belongs to fstream-mm.binance.com by comparing WebSocket responses |
 | `test_latency_with_new_auto_ip.py`     | Test instance latency after forcing AWS to assign a new auto-assigned public IP    |
 | `bind_eip.py`                          | Bind a specific Elastic IP to an instance and provide SSH commands                 |
-| `setup_cloudwatch_dashboard.py`        | Create per-instance CloudWatch dashboards showing all IP latency metrics                |
+| `setup_cloudwatch_dashboard.py`        | Create per-instance CloudWatch dashboards with tm99 outlier filtering per IP           |
 
 ### Configuration Files
 

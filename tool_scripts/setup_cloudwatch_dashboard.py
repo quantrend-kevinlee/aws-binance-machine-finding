@@ -9,6 +9,7 @@ from continuous monitoring. Each instance gets its own dashboard with:
 
 Key features:
 - Shows all IPs (up to CloudWatch's 500 limit per chart)
+- Uses tm99 (trimmed mean 99%) to filter outliers per IP independently
 - Automatic dashboard structure validation and recreation if needed
 
 The script recreates dashboards if they exist with incompatible structure.
@@ -221,9 +222,9 @@ def create_latency_dashboard(cloudwatch_client, region, dashboard_name, domains,
         row = (i // 2) + 1  # Start from row 1 (row 0 is domain chart)
         col = (i % 2) * 12   # 0 or 12 (2 columns)
         
-        # Show all IPs (CloudWatch will automatically limit to 500)
+        # Show all IPs (CloudWatch will automatically limit to 500) with tm99 outlier filtering
         metrics_expression = [
-            [ { "expression": f'SEARCH(\'{{BinanceLatency,Domain,IP,InstanceId}} MetricName="TCPHandshake_average" Domain="{domain}" InstanceId="{instance_filter}"\', \'Average\', 300)', "id": "e1" } ]
+            [ { "expression": f'SEARCH(\'{{BinanceLatency,Domain,IP,InstanceId}} MetricName="TCPHandshake_average" Domain="{domain}" InstanceId="{instance_filter}"\', \'tm99\', 300)', "id": "e1" } ]
         ]
         title = f"Average Latency by IP - {domain}"
         
@@ -367,7 +368,7 @@ Examples:
     if args.instance_filter and args.instance_filter != args.dashboard_name:
         print(f"Filtering metrics for instance: {args.instance_filter}")
     print(f"Domains to monitor: {', '.join(domains)}")
-    print(f"IP filtering: Show all IPs (up to CloudWatch's 500 limit)")
+    print(f"IP filtering: Show all IPs (up to CloudWatch's 500 limit) with tm99 outlier filtering")
     print("-" * 60)
     
     # Create or validate dashboard
