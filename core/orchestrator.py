@@ -210,9 +210,10 @@ class Orchestrator:
         """Handle instance launch error."""
         print(f"[ERROR] run_instances failed: {error}")
         
-        # Clean up the EIP immediately
-        print(f"Releasing unused EIP {eip_name}...")
-        self.eip_manager.release_eip(eip_allocation_id)
+        # Clean up the EIP immediately (only if using EIP mode)
+        if eip_allocation_id:
+            print(f"Releasing unused EIP {eip_name}...")
+            self.eip_manager.release_eip(eip_allocation_id)
         
         # Clean up the placement group immediately
         print(f"Deleting unused placement group {placement_group_name}...")
