@@ -130,8 +130,8 @@ python3 tool_scripts/query_jsonl.py all
     "report_dir": "./reports",
     "ip_list_dir": "./reports/ip_lists", // Directory for IP list files
     "max_instance_init_wait_seconds": 600, // Maximum wait time after SSH ready before testing
-    "latency_test_timeout_scale_per_domain": 120, // Timeout scale factor per domain (seconds)
-    "latency_test_timeout_floor": 180 // Minimum timeout floor regardless of domain count (seconds)
+    "tcp_connection_timeout_ms": 3000, // TCP connection timeout in milliseconds for each connection
+    "ebs_volume_size_gb": 50
 }
 ```
 
@@ -165,6 +165,16 @@ Domains are now centrally configured in `config.json` with separate lists for di
 -   `latency_test_domains`: Domains tested during instance evaluation for pass/fail criteria
 -   `discovery_domains`: All domains for IP discovery (can include more domains than tested)
 -   `monitoring_domains`: Domains continuously monitored on qualified instances
+
+### TCP Connection Timeout
+
+The `tcp_connection_timeout_ms` parameter controls how long each individual TCP connection attempt waits before timing out:
+
+-   **Default**: 3000ms (3 seconds) - Good balance between accuracy and speed
+-   **Fast testing**: 1000ms (1 second) - Faster but may miss slower valid connections
+-   **Conservative**: 5000ms (5 seconds) - More thorough but slower testing
+-   **Scope**: Applies to each individual TCP handshake during latency measurement
+-   **Safety net**: SSH operations use a separate 30-minute timeout to prevent infinite hanging
 
 ## IP Discovery System
 
@@ -740,13 +750,13 @@ Located in `tool_scripts/` directory:
     - Script automatically tries next instance type
     - Consider adjusting instance_types in config.json
 
-4. **Latency Test Timeouts**
-    - Test timeout scales with domain count (configurable via latency_test_timeout_scale_per_domain)
-    - Minimum timeout ensures tests complete (configurable via latency_test_timeout_floor)
-    - Progress is now displayed in real-time on your terminal
+4. **TCP Connection Timeouts**
+    - Individual TCP connections timeout based on `tcp_connection_timeout_ms` in config.json
+    - SSH operations use a large safety net timeout (30 minutes) to prevent hanging
+    - Progress is displayed in real-time on your terminal
     - Shows DNS resolution, test progress, and results for each IP
-    - If timeout occurs, check the last displayed progress to identify slow domains
-    - Partial results may still be available even if timeout occurs
+    - Tests complete naturally when all IPs succeed or timeout
+    - Partial results may still be available if some connections timeout
 
 ### Best Practices
 
@@ -766,7 +776,7 @@ Located in `tool_scripts/` directory:
 5. **JSONL Format**: Flexible schema for future domain changes
 6. **UTC+8 Timezone**: Aligns with APAC trading hours
 7. **Asynchronous Cleanup**: Non-blocking resource management
-8. **Dynamic Test Timeout**: Scales with number of domains (configurable via latency_test_timeout_scale_per_domain) with a minimum floor (latency_test_timeout_floor)
+8. **TCP Connection Timeout Control**: Individual TCP connections timeout based on `tcp_connection_timeout_ms` configuration with SSH safety net
 9. **Real-time Progress**: Displays remote test progress on local terminal for debugging
 10. **Max Instance Initialization Wait**: Configurable maximum wait after SSH ensures accurate latency measurements by allowing the instance to stabilize
 11. **Auto-Naming**: Qualified instances automatically renamed to "Qualified*{timestamp}*{median}/{best}" format for easy identification

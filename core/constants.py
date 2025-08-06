@@ -32,10 +32,10 @@ DEFAULT_SSH_TIMEOUT = 300  # Default for general SSH commands
 DEFAULT_SSH_MAX_ATTEMPTS = 30
 DEFAULT_SSH_RETRY_DELAY = 5
 
-# Latency test timeout calculation
-# The timeout scales with the number of domains being tested
-# Configurable via latency_test_timeout_scale_per_domain and latency_test_timeout_floor in config.json
-# This ensures adequate time for testing multiple IPs per domain
+# Latency test timeout model
+# TCP connection timeout is configurable via tcp_connection_timeout_ms in config.json
+# SSH timeout uses a large fixed value (30 minutes) as a safety net
+# Tests complete naturally when all TCP connections succeed or timeout
 
 # Thread cleanup settings
 CLEANUP_CHECK_DELAY = 10  # seconds

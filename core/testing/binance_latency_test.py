@@ -14,7 +14,7 @@ from datetime import datetime
 
 ATTEMPTS = 1000
 WARMUP_ATTEMPTS = 100  # Warmup attempts to populate caches
-TIMEOUT = 1
+DEFAULT_TIMEOUT_MS = 1000  # Default TCP timeout in milliseconds
 
 # Progress reporting to stderr
 def log_progress(message):
@@ -40,14 +40,14 @@ def load_config_domains():
         log_progress(f"WARNING: Failed to load config.json: {e}")
         return []
 
-def test_latency(ip, hostname):
+def test_latency(ip, hostname, timeout_seconds):
     # Warmup phase - establish connections but don't record timings
     warmup_success = 0
     warmup_errors = {}
     for i in range(WARMUP_ATTEMPTS):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(TIMEOUT)
+            s.settimeout(timeout_seconds)
             s.connect((ip, 443))
             s.close()
             warmup_success += 1
@@ -70,7 +70,7 @@ def test_latency(ip, hostname):
     for i in range(ATTEMPTS):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(TIMEOUT)
+            s.settimeout(timeout_seconds)
             t0 = time.perf_counter_ns()
             s.connect((ip, 443))
             t1 = time.perf_counter_ns()
@@ -179,6 +179,12 @@ def main():
         action="store_true",
         help="Skip warmup phase"
     )
+    parser.add_argument(
+        "--tcp-timeout-ms",
+        type=int,
+        default=DEFAULT_TIMEOUT_MS,
+        help=f"TCP connection timeout in milliseconds (default: {DEFAULT_TIMEOUT_MS}ms)"
+    )
     args = parser.parse_args()
     
     # Update warmup attempts
@@ -186,6 +192,9 @@ def main():
         WARMUP_ATTEMPTS = 0
     else:
         WARMUP_ATTEMPTS = args.warmup
+    
+    # Convert TCP timeout from milliseconds to seconds
+    tcp_timeout_seconds = args.tcp_timeout_ms / 1000.0
     
     # Determine domains to test
     domains = None
@@ -223,7 +232,7 @@ def main():
         sys.exit(1)
     
     log_progress(f"Starting latency tests for {len(domains)} domains")
-    log_progress(f"Configuration: {WARMUP_ATTEMPTS} warmup + {ATTEMPTS} measured attempts per IP, {TIMEOUT}s timeout")
+    log_progress(f"Configuration: {WARMUP_ATTEMPTS} warmup + {ATTEMPTS} measured attempts per IP, {tcp_timeout_seconds:.3f}s timeout")
     log_progress("=" * 60)
     
     for domain_idx, hostname in enumerate(domains, 1):
@@ -241,7 +250,7 @@ def main():
         for ip_idx, ip in enumerate(ips, 1):
             log_progress(f"  [{ip_idx}/{len(ips)}] Testing {hostname} ({ip})...")
             try:
-                stats = test_latency(ip, hostname)
+                stats = test_latency(ip, hostname, tcp_timeout_seconds)
                 results[hostname]["ips"][ip] = stats
             except Exception as e:
                 log_progress(f"    ERROR: Exception during latency test: {e}")

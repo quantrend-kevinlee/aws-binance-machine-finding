@@ -45,14 +45,11 @@ class Orchestrator:
         
         # Initialize testing components
         self.ssh_client = SSHClient(config.key_path)
-        # Pass the number of domains and timeout configuration
-        # Timeouts scale with domain count (latency_test_timeout_scale_per_domain) 
-        # with a minimum floor (latency_test_timeout_floor)
+        # Initialize latency test runner with TCP timeout from config
         self.latency_runner = LatencyTestRunner(
             self.ssh_client, 
             domains=config.latency_test_domains,
-            timeout_per_domain=config.latency_test_timeout_scale_per_domain,
-            min_timeout=config.latency_test_timeout_floor
+            tcp_timeout_ms=config.tcp_connection_timeout_ms
         )
         self.latency_runner.load_test_script()
         self.result_processor = ResultProcessor(
@@ -111,7 +108,6 @@ class Orchestrator:
             print(f"         EIPs will be preserved with qualified instances")
         else:
             print(f"IP Mode: Auto-assigned - Using subnet's auto-assigned public IPs")
-            print(f"         Note: IPs may change if instances are stopped/started")
         print(f"Latency thresholds: median ≤ {self.config.median_threshold_us}μs OR best ≤ {self.config.best_threshold_us}μs")
         print("="*60)
         

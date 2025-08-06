@@ -33,7 +33,7 @@ class Config:
                 'key_name', 'key_path', 'placement_group_name_base', 'eip_name_base',
                 'use_eip', 'latency_thresholds', 'instance_types', 'report_dir',
                 'latency_test_domains', 'discovery_domains', 'monitoring_domains', 'ip_list_dir',
-                'max_instance_init_wait_seconds', 'latency_test_timeout_scale_per_domain', 'latency_test_timeout_floor',
+                'max_instance_init_wait_seconds', 'tcp_connection_timeout_ms',
                 'ebs_volume_size_gb'
             ]
             
@@ -124,14 +124,9 @@ class Config:
         return self._data['max_instance_init_wait_seconds']
     
     @property
-    def latency_test_timeout_scale_per_domain(self) -> int:
-        """Timeout scale factor per domain for latency testing (in seconds)."""
-        return self._data['latency_test_timeout_scale_per_domain']
-    
-    @property
-    def latency_test_timeout_floor(self) -> int:
-        """Minimum timeout floor for latency testing regardless of domain count (in seconds)."""
-        return self._data['latency_test_timeout_floor']
+    def tcp_connection_timeout_ms(self) -> int:
+        """TCP connection timeout in milliseconds for latency testing."""
+        return self._data['tcp_connection_timeout_ms']
     
     @property
     def latency_test_domains(self) -> List[str]:

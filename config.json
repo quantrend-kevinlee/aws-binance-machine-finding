@@ -10,15 +10,10 @@
     "eip_name_base": "ll_eip",
     "use_eip": false,
     "latency_thresholds": {
-        "median_us": 120,
-        "best_us": 100
+        "median_us": 140,
+        "best_us": 120
     },
-    "latency_test_domains": [
-        "fstream-mm.binance.com",
-        "ws-fapi-mm.binance.com",
-        "stream.binance.com",
-        "ws-api.binance.com"
-    ],
+    "latency_test_domains": ["ws-fapi-mm.binance.com", "ws-api.binance.com"],
     "discovery_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",
@@ -47,7 +42,6 @@
     "report_dir": "./reports",
     "ip_list_dir": "./reports/ip_lists",
     "max_instance_init_wait_seconds": 600,
-    "latency_test_timeout_scale_per_domain": 150,
-    "latency_test_timeout_floor": 180,
+    "tcp_connection_timeout_ms": 100,
     "ebs_volume_size_gb": 50
 }

@@ -10,24 +10,20 @@ from .ssh_client import SSHClient
 class LatencyTestRunner:
     """Runs latency tests on EC2 instances."""
     
-    def __init__(self, ssh_client: SSHClient, domains: list = None,
-                 timeout_per_domain: int = 30, min_timeout: int = 180):
+    def __init__(self, ssh_client: SSHClient, domains: list = None, tcp_timeout_ms: int = 3000):
         """Initialize latency test runner.
         
         Args:
             ssh_client: SSH client instance
             domains: List of domains to test
-            timeout_per_domain: Timeout seconds per domain
-            min_timeout: Minimum timeout regardless of domain count
+            tcp_timeout_ms: TCP connection timeout in milliseconds for each connection
         """
         self.ssh_client = ssh_client
         self._test_script = None
         self.domains = domains or []
-        self.num_domains = len(self.domains)
-        self.timeout_per_domain = timeout_per_domain
-        self.min_timeout = min_timeout
-        # Calculate timeout based on domain count, with configured minimum
-        self.test_timeout = max(self.min_timeout, self.timeout_per_domain * self.num_domains)
+        self.tcp_timeout_ms = tcp_timeout_ms
+        # Use large SSH timeout as safety net (30 minutes)
+        self.ssh_timeout = 1800
     
     def load_test_script(self, script_path: str = "binance_latency_test.py") -> None:
         """Load the latency test script from core/testing directory.
@@ -76,24 +72,24 @@ class LatencyTestRunner:
                 print(f"[ERROR] Failed to deploy IP list: {stderr}")
                 return None
             
-            # Run test with IP list
-            test_command = f"{base_command} --ip-list /tmp/ip_list.json"
+            # Run test with IP list and TCP timeout
+            test_command = f"{base_command} --ip-list /tmp/ip_list.json --tcp-timeout-ms {self.tcp_timeout_ms}"
             print("[INFO] Using provided IP list for testing")
         else:
-            # Run test in legacy mode (local DNS resolution)
-            test_command = base_command
+            # Run test in legacy mode (local DNS resolution) with TCP timeout
+            test_command = f"{base_command} --tcp-timeout-ms {self.tcp_timeout_ms}"
             print("[INFO] Using legacy mode with local DNS resolution")
         
         # Run the test script with progress display
-        print(f"Executing latency tests (timeout: {self.test_timeout}s for {self.num_domains} domains)...")
-        print(f"Timeout configuration: {self.timeout_per_domain}s scale per domain, {self.min_timeout}s floor")
+        print(f"Executing latency tests with {self.tcp_timeout_ms}ms TCP timeout...")
+        print(f"SSH timeout: {self.ssh_timeout}s (safety net)")
         print(f"Progress will be displayed below:")
         print("-" * 60)
         
         stdout, stderr, code = self.ssh_client.run_command_with_progress(
             public_ip, 
             test_command, 
-            timeout=self.test_timeout
+            timeout=self.ssh_timeout
         )
         
         print("-" * 60)
