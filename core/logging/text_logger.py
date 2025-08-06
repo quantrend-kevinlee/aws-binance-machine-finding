@@ -1,5 +1,6 @@
 """Text format logging for the latency finder."""
 
+import os
 from typing import Dict, Any
 
 from ..utils import format_domain_short
@@ -15,6 +16,12 @@ class TextLogger:
             log_file: Path to text log file
         """
         self.log_file = log_file
+    
+    def _ensure_file_exists(self) -> None:
+        """Ensure log file and directory exist."""
+        if not os.path.exists(self.log_file):
+            # Create directory if needed
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
     
     def log_test_result(self, timestamp: str, instance_id: str, instance_type: str,
                        instance_passed: bool, domain_stats: Dict[str, Any],
@@ -34,6 +41,9 @@ class TextLogger:
             ip_mode: IP assignment mode ('eip' or 'auto-assigned')
             public_ip: The public IP address of the instance
         """
+        # Ensure directory exists before writing
+        self._ensure_file_exists()
+        
         with open(self.log_file, "a") as f:
             # Write summary line
             f.write(f"[{timestamp}] Instance: {instance_id} ({instance_type})\n")

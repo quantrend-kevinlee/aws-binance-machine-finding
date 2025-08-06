@@ -13,7 +13,11 @@
         "median_us": 140,
         "best_us": 120
     },
-    "latency_test_domains": ["ws-fapi-mm.binance.com", "ws-api.binance.com"],
+    "latency_test_domains": [
+        "fstream-mm.binance.com",
+        "ws-fapi-mm.binance.com",
+        "ws-api.binance.com"
+    ],
     "discovery_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",

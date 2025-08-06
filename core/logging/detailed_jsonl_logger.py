@@ -15,14 +15,12 @@ class DetailedJSONLLogger:
             log_file: Path to detailed JSONL log file
         """
         self.log_file = log_file
-        self._ensure_file_exists()
     
     def _ensure_file_exists(self) -> None:
-        """Ensure log file exists."""
+        """Ensure log file and directory exist."""
         if not os.path.exists(self.log_file):
-            # Just touch the file to create it
-            with open(self.log_file, "w") as f:
-                pass
+            # Create directory if needed
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
     
     def log_test_result(self, timestamp: str, instance_id: str, instance_type: str,
                        instance_passed: bool, results: Dict[str, Any], 
@@ -83,6 +81,9 @@ class DetailedJSONLLogger:
                     "p99": round(p99, 2) if p99 != float("inf") else None,
                     "max": round(max_val, 2) if max_val != float("inf") else None
                 }
+        
+        # Ensure directory exists before writing
+        self._ensure_file_exists()
         
         # Append to detailed JSONL file
         with open(self.log_file, "a") as f:

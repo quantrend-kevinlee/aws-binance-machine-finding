@@ -15,14 +15,12 @@ class JSONLLogger:
             log_file: Path to JSONL log file
         """
         self.log_file = log_file
-        self._ensure_file_exists()
     
     def _ensure_file_exists(self) -> None:
-        """Ensure log file exists."""
+        """Ensure log file and directory exist."""
         if not os.path.exists(self.log_file):
-            # Just touch the file to create it
-            with open(self.log_file, "w") as f:
-                pass
+            # Create directory if needed
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
     
     def log_test_result(self, timestamp: str, instance_id: str, instance_type: str,
                        instance_passed: bool, domain_stats: Dict[str, Any],
@@ -57,6 +55,9 @@ class JSONLLogger:
                     "median_ip": stats["best_median_ip"],
                     "best_ip": stats["best_best_ip"]
                 }
+        
+        # Ensure directory exists before writing
+        self._ensure_file_exists()
         
         # Append to JSONL file
         with open(self.log_file, "a") as f:

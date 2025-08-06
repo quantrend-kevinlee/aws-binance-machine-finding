@@ -98,6 +98,54 @@ class Orchestrator:
         
         print("="*60 + "\n")
     
+    def _refresh_ip_list(self, show_changes: bool = True) -> bool:
+        """Refresh IP list from file and optionally show changes.
+        
+        Args:
+            show_changes: Whether to log changes in IP counts
+            
+        Returns:
+            True if refresh was successful
+        """
+        ip_list_file = os.path.join(self.config.ip_list_dir, "ip_list_latest.json")
+        
+        # Store old counts for comparison
+        old_total = sum(len(ips) for ips in (self.ip_list or {}).values())
+        old_counts = {}
+        if self.ip_list:
+            for domain, ips in self.ip_list.items():
+                old_counts[domain] = len(ips)
+        
+        # Load new IP list
+        new_ip_list = load_ip_list(ip_list_file, self.config.latency_test_domains)
+        
+        if new_ip_list is None:
+            print(f"[WARN] Failed to refresh IP list, using existing data")
+            return False
+        
+        # Update instance IP list
+        self.ip_list = new_ip_list
+        
+        if show_changes:
+            # Calculate changes
+            new_total = sum(len(ips) for ips in self.ip_list.values())
+            timestamp = get_current_timestamp()
+            
+            print(f"[{timestamp}] IP list refreshed: {new_total} total IPs")
+            
+            for domain, ips in self.ip_list.items():
+                new_count = len(ips)
+                old_count = old_counts.get(domain, 0)
+                
+                if new_count != old_count:
+                    change = new_count - old_count
+                    change_str = f"({change:+d})" if change != 0 else ""
+                    print(f"  - {domain}: {new_count} IPs {change_str}")
+                else:
+                    print(f"  - {domain}: {new_count} IPs")
+        
+        return True
+    
     def run(self) -> None:
         """Run the main orchestration loop."""
         print(f"Starting AWS instance search in AZ {self.config.availability_zone}...")
@@ -111,7 +159,7 @@ class Orchestrator:
         print(f"Latency thresholds: median ≤ {self.config.median_threshold_us}μs OR best ≤ {self.config.best_threshold_us}μs")
         print("="*60)
         
-        # Load IP list from file
+        # Load initial IP list from file
         self._load_ip_list()
         
         try:
@@ -304,7 +352,11 @@ class Orchestrator:
             ec2_manager=self.ec2_manager
         )
         
-        # Run latency test with current IP list (already includes any newly discovered IPs)
+        # Refresh IP list to get latest IPs from discover_ips.py
+        print(f"Refreshing IP list before testing...")
+        self._refresh_ip_list(show_changes=False)
+        
+        # Run latency test with refreshed IP list
         results = self.latency_runner.run_latency_test(test_ip, ip_list=self.ip_list)
         if not results:
             self.ec2_manager.terminate_instance(instance_id)

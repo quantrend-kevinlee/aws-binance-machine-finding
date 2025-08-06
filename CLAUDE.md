@@ -203,6 +203,7 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
 2. **Integration with Testing**:
 
     - `find_instance.py` reads IP list from file at startup
+    - **Dynamic refresh**: IP list is automatically refreshed before each instance test to get latest discoveries
     - Falls back to DNS resolution if no IP list exists (fresh repo)
     - No background IP collection during instance testing
     - Test instances receive comprehensive IP list (not just DNS subset)
@@ -297,6 +298,7 @@ python3 test_instance_latency.py i-1234567890abcdef0
 5. **Result Logging**
     - JSONL format for flexible schema (`latency_log_YYYY-MM-DD.jsonl`)
     - Detailed text logs (`latency_log_YYYY-MM-DD.txt`)
+    - **Lazy file creation**: Log files are created only when first result is available (not at startup)
     - All timestamps in UTC+8 (Singapore/HK time)
 
 ## Local Testing
@@ -788,3 +790,5 @@ Located in `tool_scripts/` directory:
 17. **Continuous Search**: Search continues indefinitely to find multiple qualified instances rather than stopping after the first one
 18. **Automatic Instance Protection**: Qualified instances automatically have stop protection enabled (prevents both stop and termination)
 19. **Continuous Monitoring**: Qualified instances automatically deploy latency monitoring that publishes metrics to CloudWatch for long-term visualization and alerting
+20. **Dynamic IP Refresh**: IP list is automatically refreshed before each instance test to incorporate latest discoveries from `discover_ips.py`
+21. **Lazy File Creation**: Log files are created on-demand when first result is available, not at startup, for cleaner repo initialization
