@@ -18,8 +18,9 @@ import sys
 import os
 import json
 import subprocess
-import socket
 import boto3
+from core.testing import SSHClient
+from core.testing.file_deployment import create_ip_list_deployer
 
 def get_instance_public_ip(instance_id, region):
     """Get the public IP of an instance."""
@@ -90,82 +91,44 @@ def main():
         
         print("\nDeploying and running latency test...")
         
-        # SCP the file
-        scp_cmd = [
-            "scp",
-            "-i", key_path,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            test_script,
-            f"ec2-user@{public_ip}:~/"
-        ]
+        # Create SSH client for file operations
+        ssh_client = SSHClient(key_path)
         
-        result = subprocess.run(scp_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("Failed to copy test script:")
-            print(result.stderr)
+        # Deploy test script using shared utilities
+        print("[INFO] Deploying test script via SCP...")
+        if not ssh_client.copy_file(public_ip, test_script, "~/binance_latency_test.py"):
+            print("[ERROR] Failed to deploy test script")
             sys.exit(1)
+        print("[INFO] Test script deployed successfully")
     
-    # Load IP list for both local and remote execution
-    ip_list_dir = config['ip_list_dir']
-    ip_list_file = os.path.join(ip_list_dir, "ip_list_latest.json")
-    ip_list_loaded = False
+    # Load IP list using shared utilities
+    ip_list_file = os.path.join(config['ip_list_dir'], "ip_list_latest.json")
     
-    if os.path.exists(ip_list_file):
-        # Try to load IP list directly from file
-        try:
-            # Add parent directory to path for imports
-            parent_dir = os.path.dirname(__file__)
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-            
-            # Try using the core module
-            try:
-                from core.ip_discovery import load_ip_list
-                ip_list = load_ip_list(ip_list_file, config['latency_test_domains'])
-            except ImportError:
-                # Fallback: Load IP list directly from file
-                print("[INFO] Loading IP list directly from file")
-                with open(ip_list_file, 'r') as f:
-                    ip_data = json.load(f)
-                
-                # Extract IPs from the data structure (all IPs are active)
-                ip_list = {}
-                for domain, domain_data in ip_data.get('domains', {}).items():
-                    ips = list(domain_data.get('ips', {}).keys())
-                    if ips:
-                        ip_list[domain] = ips
-            
-            if ip_list:
-                print(f"[INFO] Using discovered IP list for testing ({len(ip_list)} domains)")
-                ip_list_loaded = True
-            else:
-                print("[INFO] No active IPs found in IP list")
-                
-        except Exception as e:
-            print(f"[WARN] Failed to load IP list: {e}")
-    else:
-        print("[INFO] No IP list file found at expected location")
+    # Create IP list deployer for shared functionality
+    if not run_locally:
+        key_path = os.path.expanduser(config['key_path'])
+        ip_deployer = create_ip_list_deployer(key_path)
     
-    # If IP list wasn't loaded, fall back to DNS resolution
-    if not ip_list_loaded:
-        print("[WARN] Running without pre-discovered IPs (DNS resolution only)")
-        print("[INFO] Performing local DNS resolution for domains...")
+    # Load IP list using the core discovery system
+    try:
+        # Add parent directory to path for imports
+        parent_dir = os.path.dirname(__file__)
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
         
-        ip_list = {}
-        for domain in config['latency_test_domains']:
-            try:
-                # Do DNS resolution
-                ips = socket.gethostbyname_ex(domain)[2]
-                if ips:
-                    ip_list[domain] = ips
-                    print(f"  - {domain}: {len(ips)} IPs resolved")
-            except Exception as e:
-                print(f"  - {domain}: DNS resolution failed: {e}")
+        from core.ip_discovery import load_ip_list
+        ip_list = load_ip_list(ip_list_file, config['latency_test_domains'])
         
-        if not ip_list:
-            print("[ERROR] Could not resolve any domains")
+        if ip_list:
+            total_ips = sum(len(ips) for ips in ip_list.values())
+            print(f"[INFO] Loaded {total_ips} IPs from discovery system ({len(ip_list)} domains)")
+        else:
+            print("[ERROR] Could not load IP list from file or DNS fallback")
             sys.exit(1)
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to load IP list: {e}")
+        sys.exit(1)
 
     if run_locally:
         # For local execution, create temporary IP list file
@@ -176,102 +139,74 @@ def main():
         test_command = f"python3 {test_script} --domains {domains_args} --ip-list /tmp/ip_list_local.json"
         print(f"[INFO] Running locally: {test_command}")
     else:
-        # For remote execution, deploy the IP list to the instance
-        # Use temporary file and SCP for reliable file transfer
-        with open('/tmp/ip_list_deploy.json', 'w') as f:
-            json.dump(ip_list, f)
+        # For remote execution, deploy the IP list using shared utilities
+        print("[INFO] Deploying IP list via SCP...")
         
-        # SCP the IP list file
-        scp_ip_cmd = [
-            "scp",
-            "-i", key_path,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "/tmp/ip_list_deploy.json",
-            f"ec2-user@{public_ip}:/tmp/ip_list.json"
-        ]
-        result = subprocess.run(scp_ip_cmd, capture_output=True, text=True)
+        # Use the file deployer from SSH client to deploy IP list
+        file_deployer = ssh_client.file_deployer if hasattr(ssh_client, 'file_deployer') else ip_deployer.file_deployer
         
-        # Clean up temporary file
-        os.unlink('/tmp/ip_list_deploy.json')
-        
-        if result.returncode == 0:
+        if file_deployer.deploy_ip_list(public_ip, ip_list, "/tmp/ip_list.json"):
             domains_args = " ".join(config['latency_test_domains'])
             test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
+            print("[INFO] IP list deployed successfully via SCP")
         else:
-            print(f"[ERROR] Failed to deploy IP list: {result.stderr}")
+            print("[ERROR] Failed to deploy IP list via SCP")
             sys.exit(1)
     
-    # Run the test
+    # Run the test using shared utilities
+    print("\n" + "="*60)
+    print("RUNNING LATENCY TEST")
+    print("="*60)
+    
     if run_locally:
-        # Run locally without SSH - build proper command args
+        # Run locally without SSH - use subprocess for local execution
         cmd_args = [
             "python3", test_script,
             "--domains"
         ] + config['latency_test_domains'] + [
             "--ip-list", "/tmp/ip_list_local.json"
         ]
-        process = subprocess.Popen(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    else:
-        # Run via SSH on remote instance
-        ssh_cmd = [
-            "ssh",
-            "-i", key_path,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            f"ec2-user@{public_ip}",
-            test_command
-        ]
-        process = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    
-    # Display stderr (progress) in real-time
-    import select
-    import fcntl
-    
-    # Make both stderr and stdout non-blocking
-    stderr_fd = process.stderr.fileno()
-    stdout_fd = process.stdout.fileno()
-    
-    stderr_flags = fcntl.fcntl(stderr_fd, fcntl.F_GETFL)
-    fcntl.fcntl(stderr_fd, fcntl.F_SETFL, stderr_flags | os.O_NONBLOCK)
-    
-    stdout_flags = fcntl.fcntl(stdout_fd, fcntl.F_GETFL)
-    fcntl.fcntl(stdout_fd, fcntl.F_SETFL, stdout_flags | os.O_NONBLOCK)
-    
-    stdout_data = []
-    while True:
-        if process.poll() is not None:
-            break
+        print(f"[INFO] Running locally: {' '.join(cmd_args)}")
         
-        # Read both stderr and stdout
-        ready, _, _ = select.select([process.stderr, process.stdout], [], [], 0.1)
-        
-        if process.stderr in ready:
-            try:
-                line = process.stderr.readline()
-                if line:
-                    print(line.rstrip())
-            except:
-                pass
+        try:
+            result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=1800)
+            full_stdout = result.stdout
+            
+            if result.stderr:
+                print("Progress/debug output:")
+                print(result.stderr)
                 
-        if process.stdout in ready:
-            try:
-                data = process.stdout.read(8192)  # Read in chunks
-                if data:
-                    stdout_data.append(data)
-            except:
-                pass
-    
-    # Get any remaining output
-    stdout, stderr = process.communicate()
-    if stdout:
-        stdout_data.append(stdout)
-    if stderr:
-        print(stderr)
-    
-    # Parse and display results
-    full_stdout = ''.join(stdout_data)
+            if result.returncode != 0:
+                print(f"[ERROR] Local execution failed with return code {result.returncode}")
+                if full_stdout:
+                    print(f"Partial output: {full_stdout}")
+                sys.exit(1)
+                
+        except subprocess.TimeoutExpired:
+            print("[ERROR] Local test execution timed out")
+            sys.exit(1)
+            
+    else:
+        # Run via SSH using shared utilities with real-time progress
+        print(f"[INFO] Running on remote instance: {test_command}")
+        print("Real-time progress will be displayed below:")
+        print("-" * 40)
+        
+        full_stdout, stderr_output, return_code = ssh_client.run_command_with_progress(
+            public_ip, 
+            test_command, 
+            timeout=1800  # 30 minute timeout
+        )
+        
+        print("-" * 40)
+        
+        if return_code != 0:
+            print(f"\n[ERROR] Remote execution failed with return code {return_code}")
+            if stderr_output:
+                print(f"Error output: {stderr_output}")
+            if full_stdout:
+                print(f"Partial results: {full_stdout}")
+            sys.exit(1)
     if full_stdout:
         try:
             print("\nProcessing results...")

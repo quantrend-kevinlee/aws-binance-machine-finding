@@ -8,15 +8,16 @@
     "binance_vip_whitelisted_eip_allocation_id": "eipalloc-05500f18fa63990b6",
     "placement_group_name_base": "ll_cpg",
     "eip_name_base": "ll_eip",
-    "use_eip": false,
+    "use_eip": true,
     "latency_thresholds": {
         "median_us": 140,
-        "best_us": 120
+        "best_us": 100
     },
     "latency_test_domains": [
         "fstream-mm.binance.com",
         "ws-fapi-mm.binance.com",
-        "ws-api.binance.com"
+        "fapi-mm.binance.com",
+        "stream.binance.com"
     ],
     "discovery_domains": [
         "fstream-mm.binance.com",

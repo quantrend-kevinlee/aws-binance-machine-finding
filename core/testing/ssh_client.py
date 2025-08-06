@@ -18,6 +18,40 @@ class SSHClient:
         """
         self.key_path = key_path
     
+    def _build_ssh_base_cmd(self, ip: str) -> list:
+        """Build base SSH command with standard options.
+        
+        Args:
+            ip: Target IP address
+            
+        Returns:
+            List of SSH command components
+        """
+        return [
+            "ssh",
+            "-i", self.key_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "LogLevel=ERROR",
+            f"ec2-user@{ip}"
+        ]
+    
+    def _build_scp_base_cmd(self) -> list:
+        """Build base SCP command with standard options.
+        
+        Returns:
+            List of SCP command components (without source/destination)
+        """
+        return [
+            "scp",
+            "-i", self.key_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "LogLevel=ERROR"
+        ]
+    
     def run_command(self, ip: str, command: str, timeout: int = DEFAULT_SSH_TIMEOUT, 
                    capture_stderr: bool = True) -> Tuple[str, str, int]:
         """Run command via SSH and return output.
@@ -31,16 +65,7 @@ class SSHClient:
         Returns:
             Tuple of (stdout, stderr, return_code)
         """
-        ssh_cmd = [
-            "ssh",
-            "-i", self.key_path,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-            "-o", "LogLevel=ERROR",
-            f"ec2-user@{ip}",
-            command
-        ]
+        ssh_cmd = self._build_ssh_base_cmd(ip) + [command]
         
         try:
             result = subprocess.run(
@@ -57,9 +82,13 @@ class SSHClient:
     
     def run_command_with_progress(self, ip: str, command: str, 
                                  timeout: int = DEFAULT_SSH_TIMEOUT) -> Tuple[str, str, int]:
-        """Run command via SSH with real-time stderr display.
+        """Run command via SSH with real-time stderr display and robust I/O handling.
         
-        This is useful for long-running commands that output progress to stderr.
+        This implementation provides:
+        - Real-time stderr display for progress monitoring
+        - Reliable stdout collection for final results
+        - Proper separation of progress (stderr) and results (stdout)
+        - Robust timeout and error handling
         
         Args:
             ip: Target IP address
@@ -69,39 +98,35 @@ class SSHClient:
         Returns:
             Tuple of (stdout, collected_stderr, return_code)
         """
-        ssh_cmd = [
-            "ssh",
-            "-i", self.key_path,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-            "-o", "LogLevel=ERROR",
-            f"ec2-user@{ip}",
-            command
-        ]
+        ssh_cmd = self._build_ssh_base_cmd(ip) + [command]
         
         try:
             process = subprocess.Popen(
                 ssh_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1  # Line buffered
+                text=True
             )
             
-            stdout_lines = []
-            stderr_lines = []
+            stdout_data = []  # Collect stdout chunks for final processing
+            stderr_lines = []  # Collect stderr lines for progress and final stderr
             
-            # Read stderr in real-time and display it
+            # Setup non-blocking I/O if available
             try:
                 import select
                 import fcntl
                 import os
                 
-                # Make stderr non-blocking
+                # Make both stderr and stdout non-blocking
                 stderr_fd = process.stderr.fileno()
-                flags = fcntl.fcntl(stderr_fd, fcntl.F_GETFL)
-                fcntl.fcntl(stderr_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                stdout_fd = process.stdout.fileno()
+                
+                stderr_flags = fcntl.fcntl(stderr_fd, fcntl.F_GETFL)
+                fcntl.fcntl(stderr_fd, fcntl.F_SETFL, stderr_flags | os.O_NONBLOCK)
+                
+                stdout_flags = fcntl.fcntl(stdout_fd, fcntl.F_GETFL)
+                fcntl.fcntl(stdout_fd, fcntl.F_SETFL, stdout_flags | os.O_NONBLOCK)
+                
                 use_select = True
             except ImportError:
                 # Fallback for systems without fcntl/select
@@ -110,54 +135,69 @@ class SSHClient:
             
             start_time = time.time()
             while True:
+                # Check timeout
                 if time.time() - start_time > timeout:
                     process.kill()
-                    return "", "Command timed out after showing progress:\n" + "\n".join(stderr_lines), -1
+                    return "", f"Command timed out after {timeout}s\nProgress shown:\n" + "\n".join(stderr_lines), -1
                 
                 # Check if process has finished
                 if process.poll() is not None:
                     break
                 
                 if use_select:
-                    # Read any available stderr and stdout
+                    # Read both stderr and stdout with select
                     ready, _, _ = select.select([process.stderr, process.stdout], [], [], 0.1)
+                    
+                    # Handle stderr (progress) - display in real-time
                     if process.stderr in ready:
                         try:
                             line = process.stderr.readline()
                             if line:
-                                stderr_lines.append(line.rstrip())
+                                line_stripped = line.rstrip()
+                                stderr_lines.append(line_stripped)
                                 # Display progress to local terminal
-                                print(f"[REMOTE] {line.rstrip()}", file=sys.stderr)
+                                print(f"[REMOTE] {line_stripped}", file=sys.stderr)
                                 sys.stderr.flush()
                         except:
                             pass
+                    
+                    # Handle stdout (results) - collect for final processing
                     if process.stdout in ready:
                         try:
-                            # Read available data in chunks, not just lines
+                            # Read in chunks for better performance
                             data = process.stdout.read(8192)
                             if data:
-                                stdout_lines.append(data)
+                                stdout_data.append(data)
                         except:
                             pass
                 else:
-                    # Simple polling without select
+                    # Simple polling fallback without select
                     time.sleep(0.1)
             
             # Get any remaining output after process finished
             try:
-                stdout, remaining_stderr = process.communicate(timeout=5)  # Short timeout to avoid hanging
-                if stdout:
-                    stdout_lines.append(stdout)
+                remaining_stdout, remaining_stderr = process.communicate(timeout=5)
+                
+                # Collect remaining stdout
+                if remaining_stdout:
+                    stdout_data.append(remaining_stdout)
+                
+                # Display and collect remaining stderr
                 if remaining_stderr:
                     for line in remaining_stderr.splitlines():
                         stderr_lines.append(line)
                         print(f"[REMOTE] {line}", file=sys.stderr)
+                        
             except subprocess.TimeoutExpired:
-                # If communicate times out, just use what we have
+                # If communicate times out, kill process and use partial results
                 process.kill()
                 print("[WARN] Timeout while reading final output, using partial results", file=sys.stderr)
             
-            return ''.join(stdout_lines), '\n'.join(stderr_lines), process.returncode
+            # Join stdout data and return results
+            full_stdout = ''.join(stdout_data)
+            full_stderr = '\n'.join(stderr_lines)
+            
+            return full_stdout, full_stderr, process.returncode
             
         except subprocess.TimeoutExpired:
             process.kill()
@@ -267,8 +307,49 @@ class SSHClient:
         
         return True
     
+    def copy_file(self, ip: str, local_file_path: str, remote_file_path: str, timeout: int = 30) -> bool:
+        """Copy file to remote instance using SCP.
+        
+        Args:
+            ip: Target IP address
+            local_file_path: Path to local file
+            remote_file_path: Remote destination path
+            timeout: SCP timeout in seconds
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        scp_cmd = self._build_scp_base_cmd() + [
+            local_file_path,
+            f"ec2-user@{ip}:{remote_file_path}"
+        ]
+        
+        try:
+            result = subprocess.run(
+                scp_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            if result.returncode != 0:
+                print(f"[ERROR] SCP failed: {result.stderr}")
+                return False
+                
+            return True
+            
+        except subprocess.TimeoutExpired:
+            print(f"[ERROR] SCP timed out after {timeout}s")
+            return False
+        except Exception as e:
+            print(f"[ERROR] SCP error: {str(e)}")
+            return False
+    
     def deploy_script(self, ip: str, script_content: str, script_path: str) -> bool:
         """Deploy a script to remote instance.
+        
+        DEPRECATED: Use copy_file() for better reliability. This method is kept
+        for backward compatibility but will be removed in a future version.
         
         Args:
             ip: Target IP address

@@ -5,6 +5,7 @@ import os
 from typing import Dict, Any, Optional
 
 from .ssh_client import SSHClient
+from .file_deployment import create_file_deployer
 
 
 class LatencyTestRunner:
@@ -24,6 +25,9 @@ class LatencyTestRunner:
         self.tcp_timeout_ms = tcp_timeout_ms
         # Use large SSH timeout as safety net (30 minutes)
         self.ssh_timeout = 1800
+        
+        # Initialize file deployer for reliable file operations
+        self.file_deployer = create_file_deployer(ssh_client.key_path)
     
     def load_test_script(self, script_path: str = "binance_latency_test.py") -> None:
         """Load the latency test script from core/testing directory.
@@ -51,9 +55,12 @@ class LatencyTestRunner:
         
         print("Running latency test via SSH...")
         
-        # Deploy test script
-        if not self.ssh_client.deploy_script(public_ip, self._test_script, "/tmp/latency_test.py"):
+        # Deploy test script using reliable SCP-based method
+        if not self.file_deployer.deploy_script_file(public_ip, self._test_script, "/tmp/latency_test.py"):
+            print("[ERROR] Failed to deploy test script via SCP")
             return None
+        
+        print("[INFO] Test script deployed successfully via SCP")
         
         # Build test command with domains
         if self.domains:
@@ -64,17 +71,14 @@ class LatencyTestRunner:
         
         # Add IP list if provided
         if ip_list:
-            # Deploy IP list as JSON file
-            ip_list_json = json.dumps(ip_list)
-            deploy_cmd = f"echo '{ip_list_json}' > /tmp/ip_list.json"
-            stdout, stderr, code = self.ssh_client.run_command(public_ip, deploy_cmd)
-            if code != 0:
-                print(f"[ERROR] Failed to deploy IP list: {stderr}")
+            # Deploy IP list using reliable SCP-based method
+            if not self.file_deployer.deploy_ip_list(public_ip, ip_list, "/tmp/ip_list.json"):
+                print("[ERROR] Failed to deploy IP list via SCP")
                 return None
             
             # Run test with IP list and TCP timeout
             test_command = f"{base_command} --ip-list /tmp/ip_list.json --tcp-timeout-ms {self.tcp_timeout_ms}"
-            print("[INFO] Using provided IP list for testing")
+            print("[INFO] Using provided IP list for testing (deployed via SCP)")
         else:
             # Run test in legacy mode (local DNS resolution) with TCP timeout
             test_command = f"{base_command} --tcp-timeout-ms {self.tcp_timeout_ms}"
