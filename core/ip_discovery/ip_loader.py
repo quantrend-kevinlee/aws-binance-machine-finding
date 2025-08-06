@@ -36,13 +36,13 @@ def load_ip_list(ip_list_file: Optional[str] = None, domains: Optional[List[str]
             if domains:
                 for domain in domains:
                     if domain in all_domains:
-                        ips = list(all_domains[domain].get("ips", {}).keys())
+                        ips = list(all_domains[domain]["ips"].keys())
                         if ips:
                             ip_list[domain] = ips
             else:
                 # No domains specified, load all
                 for domain_name, domain_data in all_domains.items():
-                    ips = list(domain_data.get("ips", {}).keys())
+                    ips = list(domain_data["ips"].keys())
                     if ips:
                         ip_list[domain_name] = ips
             

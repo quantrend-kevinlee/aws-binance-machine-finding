@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import tempfile
 import threading
 from datetime import datetime
@@ -22,6 +23,7 @@ class IPPersistence:
         self.ip_lists_dir = ip_list_dir
         ensure_directory_exists(self.ip_lists_dir)
         self.latest_file = os.path.join(self.ip_lists_dir, "ip_list_latest.json")
+        self.dead_ips_file = os.path.join(self.ip_lists_dir, "dead_ips.json")
         
         # In-memory state
         self.active_data = None  # Loaded from disk
@@ -38,6 +40,13 @@ class IPPersistence:
             try:
                 with open(self.latest_file, 'r') as f:
                     self.active_data = json.load(f)
+                    
+                # Validate format
+                if not isinstance(self.active_data, dict) or 'domains' not in self.active_data:
+                    print(f"[ERROR] Invalid IP list format in {self.latest_file}")
+                    print("[ERROR] Expected format: {'domains': {domain: {'ips': {ip: {...}}}}")
+                    sys.exit(1)
+                    
             except (json.JSONDecodeError, IOError) as e:
                 print(f"[WARN] Failed to load IP list: {e}")
                 self.active_data = {"last_updated": None, "domains": {}}
@@ -82,7 +91,7 @@ class IPPersistence:
         """Sync active IPs to disk if dirty (must be called with lock held)."""
         if not self.dirty:
             return
-            
+        
         # Count active IPs for logging
         domain_counts = {}
         total_ips = 0
@@ -90,7 +99,7 @@ class IPPersistence:
         for domain_name, domain_data in self.active_data.get("domains", {}).items():
             domain_active = 0
             domain_total = 0
-            for ip_info in domain_data.get("ips", {}).values():
+            for ip_info in domain_data["ips"].values():
                 domain_total += 1
                 total_ips += 1
                 domain_active += 1
@@ -148,23 +157,18 @@ class IPPersistence:
         if "domains" not in ip_data:
             ip_data["domains"] = {}
         if domain not in ip_data["domains"]:
-            ip_data["domains"][domain] = {"ips": {}}
-        if "ips" not in ip_data["domains"][domain]:
-            ip_data["domains"][domain]["ips"] = {}
+            ip_data["domains"][domain] = {"count": 0, "ips": {}}
         
         now = datetime.now(UTC_PLUS_8).isoformat()
         
         # Get or create IP entry with time-based tracking
-        ip_entry = ip_data["domains"][domain]["ips"].get(ip, {
-            "first_seen": now,
-            "last_validated": now  # Initialize with current time for new IPs
-        })
-        
-        # Ensure new field exists for migration compatibility
-        if "last_validated" not in ip_entry:
-            ip_entry["last_validated"] = ip_entry.get("first_seen", now)
-        
-        ip_data["domains"][domain]["ips"][ip] = ip_entry
+        if ip not in ip_data["domains"][domain]["ips"]:
+            ip_data["domains"][domain]["ips"][ip] = {
+                "first_seen": now,
+                "last_validated": now
+            }
+            # Update count
+            ip_data["domains"][domain]["count"] = len(ip_data["domains"][domain]["ips"])
         
         # If updating internal data, mark as dirty
         if ip_data is self.active_data:
@@ -181,8 +185,7 @@ class IPPersistence:
             ip: IP address that was successfully validated
         """
         # Ensure IP exists
-        if domain not in ip_data.get("domains", {}) or \
-           ip not in ip_data["domains"][domain].get("ips", {}):
+        if domain not in ip_data["domains"] or ip not in ip_data["domains"][domain]["ips"]:
             # IP doesn't exist, create it first
             self.update_ip(ip_data, domain, ip)
         
@@ -212,7 +215,7 @@ class IPPersistence:
         for domain, domain_data in ip_data.get("domains", {}).items():
             domain_ips = []
             
-            for ip, ip_info in domain_data.get("ips", {}).items():
+            for ip, ip_info in domain_data["ips"].items():
                 if include_dead:
                     domain_ips.append(ip)
                 else:
@@ -237,8 +240,97 @@ class IPPersistence:
                 
         return result
     
+    def move_dead_ips_to_history(self) -> None:
+        """Move dead IPs from active list to dead IP file."""
+        with self.lock:
+            current_time = datetime.now(UTC_PLUS_8)
+            dead_threshold_seconds = 3600  # 1 hour
+            
+            # Load existing dead IPs
+            dead_ips = {}
+            if os.path.exists(self.dead_ips_file):
+                try:
+                    with open(self.dead_ips_file, 'r') as f:
+                        dead_data = json.load(f)
+                        dead_ips = dead_data.get("ips", {})
+                except:
+                    dead_ips = {}
+            
+            # Find and move dead IPs
+            moved_count = 0
+            for domain, domain_data in self.active_data.get("domains", {}).items():
+                ips_to_remove = []
+                
+                for ip, ip_info in domain_data["ips"].items():
+                    last_validated = ip_info.get("last_validated")
+                    if last_validated:
+                        try:
+                            last_validated_dt = datetime.fromisoformat(last_validated)
+                            time_since_validation = (current_time - last_validated_dt).total_seconds()
+                            
+                            if time_since_validation > dead_threshold_seconds:
+                                # Calculate lifespan
+                                first_seen = ip_info.get("first_seen")
+                                lifespan_hours = None
+                                if first_seen:
+                                    try:
+                                        first_seen_dt = datetime.fromisoformat(first_seen)
+                                        lifespan = last_validated_dt - first_seen_dt
+                                        lifespan_hours = lifespan.total_seconds() / 3600
+                                    except:
+                                        pass
+                                
+                                # Add to dead IPs
+                                dead_key = f"{domain}:{ip}"
+                                dead_ips[dead_key] = {
+                                    "domain": domain,
+                                    "ip": ip,
+                                    "first_seen": first_seen,
+                                    "last_validated": last_validated,
+                                    "declared_dead": current_time.isoformat(),
+                                    "lifespan_hours": round(lifespan_hours, 2) if lifespan_hours else None
+                                }
+                                ips_to_remove.append(ip)
+                                moved_count += 1
+                        except:
+                            pass
+                
+                # Remove dead IPs from active list
+                for ip in ips_to_remove:
+                    del self.active_data["domains"][domain]["ips"][ip]
+                    self.dirty = True
+                
+                # Update count for this domain
+                if domain in self.active_data["domains"]:
+                    self.active_data["domains"][domain]["count"] = len(self.active_data["domains"][domain]["ips"])
+            
+            # Save dead IPs file if any were moved
+            if moved_count > 0:
+                dead_data = {
+                    "last_updated": current_time.isoformat(),
+                    "total_count": len(dead_ips),
+                    "ips": dead_ips
+                }
+                
+                # Atomic write
+                temp_fd, temp_path = tempfile.mkstemp(dir=self.ip_lists_dir, text=True)
+                try:
+                    with os.fdopen(temp_fd, 'w') as f:
+                        json.dump(dead_data, f, indent=2)
+                    os.replace(temp_path, self.dead_ips_file)
+                    print(f"[IP Persistence] Moved {moved_count} dead IPs to dead_ips.json")
+                except Exception as e:
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+                    print(f"[ERROR] Failed to save dead IPs: {e}")
+    
     def shutdown(self) -> None:
         """Gracefully shutdown and ensure all data is synced to disk."""
+        # Move dead IPs before final sync
+        self.move_dead_ips_to_history()
+        
         with self.lock:
             if self.dirty:
                 print("[IP Discovery] Syncing final changes to disk...")
@@ -249,13 +341,8 @@ class IPPersistence:
             try:
                 with open(self.latest_file, 'r') as f:
                     data = json.load(f)
-                    total_ips = sum(len(d.get("ips", {})) for d in data.get("domains", {}).values())
-                    # Count live vs dead IPs
-                    active_ips_data = self.get_all_active_ips(data, include_dead=False)
-                    live_count = sum(len(ips) for ips in active_ips_data.values())
-                    dead_count = total_ips - live_count
-                    
-                    print(f"[IP Discovery] Verified {total_ips} total IPs saved to disk ({live_count} live, {dead_count} dead)")
+                    total_ips = sum(len(d["ips"]) for d in data["domains"].values())
+                    print(f"[IP Discovery] Verified {total_ips} active IPs saved to disk")
             except Exception as e:
                 print(f"[ERROR] Failed to verify IP file: {e}")
         

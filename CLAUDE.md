@@ -186,7 +186,9 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
     - Validates IP liveness with TCP connectivity tests
     - Tracks last successful validation timestamp per IP
     - IPs are considered dead if not validated for over 1 hour
-    - Persists all IPs to `reports/ip_lists/ip_list_latest.json`
+    - Dead IPs are automatically moved to `reports/ip_lists/dead_ips.json` for historical tracking
+    - Active IPs are persisted to `reports/ip_lists/ip_list_latest.json`
+    - Runs initial validation on startup to clean up stale data
 
 2. **Integration with Testing**:
 
@@ -198,11 +200,13 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
 
 3. **IP List Format**:
 
+**Active IP List** (`ip_list_latest.json`):
 ```json
 {
     "last_updated": "2025-07-25T10:30:00+08:00",
     "domains": {
         "fstream-mm.binance.com": {
+            "count": 15,
             "ips": {
                 "54.65.8.148": {
                     "first_seen": "2025-07-25T10:00:00+08:00",
@@ -214,7 +218,25 @@ The IP discovery system addresses DNS limitations and ensures comprehensive test
 }
 ```
 
-Note: IPs are tracked with their last validation timestamp. IPs that haven't been successfully validated for over 1 hour are considered dead but remain in the file.
+**Dead IP History** (`dead_ips.json`):
+```json
+{
+    "last_updated": "2025-07-25T11:00:00+08:00",
+    "total_count": 5,
+    "ips": {
+        "fstream-mm.binance.com:54.65.8.149": {
+            "domain": "fstream-mm.binance.com",
+            "ip": "54.65.8.149",
+            "first_seen": "2025-07-25T09:00:00+08:00",
+            "last_validated": "2025-07-25T09:30:00+08:00",
+            "declared_dead": "2025-07-25T11:00:00+08:00",
+            "lifespan_hours": 0.5
+        }
+    }
+}
+```
+
+Note: Active IPs are automatically moved to the dead IP history file after 1+ hour without successful validation.
 
 ### Usage
 
@@ -695,7 +717,8 @@ Located in `tool_scripts/` directory:
 | `config.json`                          | AWS resources and test parameters                      |
 | `reports/latency_log_*.jsonl`          | Test results in JSONL format                           |
 | `reports/latency_log_*.txt`            | Detailed test logs                                     |
-| `reports/ip_lists/ip_list_latest.json` | All discovered IP addresses with validation timestamps |
+| `reports/ip_lists/ip_list_latest.json` | Active discovered IP addresses with validation timestamps |
+| `reports/ip_lists/dead_ips.json`       | Historical archive of dead IPs with lifespan tracking |
 
 ## Troubleshooting
 

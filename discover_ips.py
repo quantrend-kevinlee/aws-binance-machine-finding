@@ -9,9 +9,11 @@ Usage:
     python3 discover_ips.py
 """
 
+import os
 import sys
 import time
 import signal
+import json
 from datetime import datetime
 
 from core.config import Config
@@ -50,7 +52,6 @@ class IPDiscoveryTool:
         # Load existing IP data
         self.ip_data = self.persistence.load_latest()
         
-        
         # Extract existing IPs for the collector (discovery domains only)
         existing_ips = {}
         discovery_ip_count = 0
@@ -72,6 +73,17 @@ class IPDiscoveryTool:
             print(f"[INFO] Loaded {discovery_ip_count} IPs for {discovery_domains_with_ips}/{len(self.config.discovery_domains)} discovery domains")
             if total_file_domains > len(self.config.discovery_domains):
                 print(f"[INFO] (IP file contains {total_file_ips} total IPs across {total_file_domains} domains)")
+        
+        # Run initial validation on ALL discovery domain IPs regardless of last validation time
+        print(f"\n[INFO] Running initial validation on all discovery domain IPs...")
+        self._run_initial_validation()
+        
+        # Re-extract existing IPs after cleanup (dead IPs have been moved)
+        existing_ips = {}
+        for domain in self.config.discovery_domains:
+            domain_data = self.ip_data.get("domains", {}).get(domain, {})
+            domain_ips = set(domain_data.get("ips", {}).keys())
+            existing_ips[domain] = domain_ips
         
         # Create collector with existing IPs
         self.collector = IPCollector(self.config.discovery_domains, existing_ips=existing_ips)
@@ -117,6 +129,69 @@ class IPDiscoveryTool:
             self._print_session_summary()
             self.persistence.shutdown()
     
+    def _run_initial_validation(self):
+        """Run initial validation on all discovery domain IPs.
+        
+        This validates ALL IPs regardless of their last validation timestamp
+        to ensure newly added domains don't have their IPs incorrectly marked as dead.
+        """
+        # Get ALL IPs for discovery domains (including those that might be considered "dead")
+        all_ips = {}
+        for domain in self.config.discovery_domains:
+            domain_data = self.ip_data.get("domains", {}).get(domain, {})
+            domain_ips = list(domain_data.get("ips", {}).keys())
+            if domain_ips:
+                all_ips[domain] = domain_ips
+        
+        if not all_ips:
+            print("[INFO] No discovery domain IPs to validate")
+            return
+        
+        total_ips = sum(len(ips) for ips in all_ips.values())
+        print(f"[INFO] Validating {total_ips} IPs from {len(all_ips)} discovery domains")
+        
+        # Validate all IPs
+        validation_results = self.validator.validate_domain_ips(all_ips, show_progress=False)
+        
+        # Update timestamps for alive IPs, check dead criteria for failed IPs
+        alive_count = 0
+        dead_count = 0
+        current_time = datetime.now(UTC_PLUS_8)
+        dead_threshold_seconds = 3600  # 1 hour
+        
+        for domain, results in validation_results.items():
+            for ip, (is_alive, latency) in results.items():
+                if is_alive:
+                    # Update validation timestamp
+                    self.persistence.update_ip_validation_time(self.ip_data, domain, ip)
+                    alive_count += 1
+                else:
+                    # Check if it should be considered dead (failed AND >1 hour since last validation)
+                    domain_data = self.ip_data.get("domains", {}).get(domain, {})
+                    ip_info = domain_data.get("ips", {}).get(ip, {})
+                    last_validated = ip_info.get("last_validated")
+                    
+                    if last_validated:
+                        try:
+                            last_validated_dt = datetime.fromisoformat(last_validated)
+                            time_since_validation = (current_time - last_validated_dt).total_seconds()
+                            if time_since_validation > dead_threshold_seconds:
+                                dead_count += 1
+                        except:
+                            pass
+        
+        print(f"[INFO] Initial validation complete: {alive_count}/{total_ips} IPs responded")
+        if dead_count > 0:
+            print(f"[INFO] {dead_count} IPs are dead (failed validation AND >1 hour since last success)")
+        
+        # Save and move dead IPs
+        self.persistence.save_and_sync(self.ip_data)
+        self.persistence.move_dead_ips_to_history()
+        
+        # Update last validation time so we don't immediately run another validation
+        self.last_validation_time = time.time()
+        print("[INFO] Initial cleanup complete\n")
+    
     def _run_validation(self):
         """Run validation on all IPs and update failure counts."""
         print("\n[INFO] Running IP validation...")
@@ -157,6 +232,9 @@ class IPDiscoveryTool:
         
         # Save updated IP data
         self.persistence.save_and_sync(self.ip_data)
+        
+        # Move dead IPs to history
+        self.persistence.move_dead_ips_to_history()
         
         # Check for dead IPs based on time threshold
         current_time = datetime.now(UTC_PLUS_8)
@@ -241,6 +319,18 @@ class IPDiscoveryTool:
             print(f"Total in IP file: {total_file_ips} IPs across {total_file_domains} domains")
         
         print(f"Dead IP threshold: 1 hour without successful validation")
+        
+        # Show dead IP file info if it exists
+        dead_ips_file = os.path.join(self.config.ip_list_dir, "dead_ips.json")
+        if os.path.exists(dead_ips_file):
+            try:
+                with open(dead_ips_file, 'r') as f:
+                    dead_data = json.load(f)
+                    dead_count = dead_data.get("total_count", 0)
+                    print(f"Dead IPs in history: {dead_count} (see dead_ips.json)")
+            except:
+                pass
+        
         print("="*60)
 
 
