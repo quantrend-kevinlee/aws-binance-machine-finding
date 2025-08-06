@@ -264,6 +264,7 @@ def main():
     
     # Output JSON for easy parsing
     print(json.dumps(results))
+    sys.stdout.flush()  # Ensure output is flushed immediately
 
 if __name__ == "__main__":
     main()

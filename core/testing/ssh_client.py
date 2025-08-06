@@ -133,9 +133,10 @@ class SSHClient:
                             pass
                     if process.stdout in ready:
                         try:
-                            line = process.stdout.readline()
-                            if line:
-                                stdout_lines.append(line)
+                            # Read available data in chunks, not just lines
+                            data = process.stdout.read(8192)
+                            if data:
+                                stdout_lines.append(data)
                         except:
                             pass
                 else:

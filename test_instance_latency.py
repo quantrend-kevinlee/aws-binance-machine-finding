@@ -229,27 +229,41 @@ def main():
     import select
     import fcntl
     
-    # Make stderr non-blocking
+    # Make both stderr and stdout non-blocking
     stderr_fd = process.stderr.fileno()
-    flags = fcntl.fcntl(stderr_fd, fcntl.F_GETFL)
-    fcntl.fcntl(stderr_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    stdout_fd = process.stdout.fileno()
+    
+    stderr_flags = fcntl.fcntl(stderr_fd, fcntl.F_GETFL)
+    fcntl.fcntl(stderr_fd, fcntl.F_SETFL, stderr_flags | os.O_NONBLOCK)
+    
+    stdout_flags = fcntl.fcntl(stdout_fd, fcntl.F_GETFL)
+    fcntl.fcntl(stdout_fd, fcntl.F_SETFL, stdout_flags | os.O_NONBLOCK)
     
     stdout_data = []
     while True:
         if process.poll() is not None:
             break
         
-        # Read stderr for progress
-        ready, _, _ = select.select([process.stderr], [], [], 0.1)
-        if ready:
+        # Read both stderr and stdout
+        ready, _, _ = select.select([process.stderr, process.stdout], [], [], 0.1)
+        
+        if process.stderr in ready:
             try:
                 line = process.stderr.readline()
                 if line:
                     print(line.rstrip())
             except:
                 pass
+                
+        if process.stdout in ready:
+            try:
+                data = process.stdout.read(8192)  # Read in chunks
+                if data:
+                    stdout_data.append(data)
+            except:
+                pass
     
-    # Get remaining output
+    # Get any remaining output
     stdout, stderr = process.communicate()
     if stdout:
         stdout_data.append(stdout)
@@ -260,6 +274,7 @@ def main():
     full_stdout = ''.join(stdout_data)
     if full_stdout:
         try:
+            print("\nProcessing results...")
             results = json.loads(full_stdout)
             print("\n" + "="*60)
             print("RESULTS:")
