@@ -27,7 +27,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Configuration
-WAIT_BETWEEN_TESTS = 60  # Wait 60 seconds after test completion before next test
+WAIT_BETWEEN_TESTS = 0  # Wait 0 seconds after test completion before next test
 ATTEMPTS_PER_TEST = 100  # Reduced from 1000 for continuous monitoring
 WARMUP_ATTEMPTS = 10
 DEFAULT_TIMEOUT_MS = 3000  # Default TCP timeout in milliseconds
