@@ -134,13 +134,32 @@ class LatencyTestRunner:
         """
         print("\nLatency test results:")
         for hostname, host_data in results.items():
+            if isinstance(host_data, str):
+                # Handle error case where host_data is just an error string
+                print(f"  {hostname}: {host_data}")
+                continue
+            
+            if not isinstance(host_data, dict):
+                print(f"  {hostname}: ERROR - Unexpected data type: {type(host_data)}")
+                continue
+                
             if "error" in host_data:
                 print(f"  {hostname}: {host_data['error']}")
                 continue
             
             print(f"  {hostname}:")
             
-            for ip, ip_data in host_data["ips"].items():
+            # Get IPs data and ensure it's a dictionary
+            ips_data = host_data.get("ips", {})
+            if not isinstance(ips_data, dict):
+                print(f"    ERROR: IPs data is not a dictionary (got {type(ips_data)})")
+                continue
+            
+            for ip, ip_data in ips_data.items():
+                if not isinstance(ip_data, dict):
+                    print(f"    IP {ip}: ERROR - Invalid data format")
+                    continue
+                    
                 median = ip_data.get("median", float("inf"))
                 best = ip_data.get("best", float("inf"))
                 avg = ip_data.get("average", float("inf"))

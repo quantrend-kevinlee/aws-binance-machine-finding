@@ -62,7 +62,14 @@ def test_latency(ip, hostname, timeout_seconds):
     
     if warmup_success == 0:
         log_progress(f"    ERROR: No successful connections during warmup to {ip}")
-        return float("inf"), float("inf")
+        return {
+            "median": float("inf"),
+            "best": float("inf"),
+            "average": float("inf"),
+            "p1": float("inf"),
+            "p99": float("inf"),
+            "max": float("inf")
+        }
     
     # Actual measurement phase
     latencies = []
