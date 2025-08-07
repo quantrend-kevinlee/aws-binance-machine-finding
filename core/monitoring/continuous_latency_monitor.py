@@ -30,7 +30,7 @@ from botocore.exceptions import ClientError
 WAIT_BETWEEN_TESTS = 60  # Wait 60 seconds after test completion before next test
 ATTEMPTS_PER_TEST = 100  # Reduced from 1000 for continuous monitoring
 WARMUP_ATTEMPTS = 10
-TIMEOUT = 1
+DEFAULT_TIMEOUT_MS = 3000  # Default TCP timeout in milliseconds
 CLOUDWATCH_NAMESPACE = "BinanceLatency"
 
 class ContinuousLatencyMonitor:
@@ -39,6 +39,10 @@ class ContinuousLatencyMonitor:
         self.config = self._load_config(config_file)
         self.ip_list = self._load_ip_list(ip_list_file)
         self.instance_id = instance_id or self._get_instance_id()
+        
+        # Get TCP timeout from config, convert from ms to seconds
+        self.tcp_timeout_ms = self.config.get('tcp_connection_timeout_ms', DEFAULT_TIMEOUT_MS)
+        self.tcp_timeout_seconds = self.tcp_timeout_ms / 1000.0
         
         # CloudWatch setup (required)
         try:
@@ -161,7 +165,7 @@ class ContinuousLatencyMonitor:
         for _ in range(WARMUP_ATTEMPTS):
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(TIMEOUT)
+                s.settimeout(self.tcp_timeout_seconds)
                 s.connect((ip, 443))
                 s.close()
             except:
@@ -172,7 +176,7 @@ class ContinuousLatencyMonitor:
         for _ in range(ATTEMPTS_PER_TEST):
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(TIMEOUT)
+                s.settimeout(self.tcp_timeout_seconds)
                 t0 = time.perf_counter_ns()
                 s.connect((ip, 443))
                 t1 = time.perf_counter_ns()
@@ -362,6 +366,7 @@ class ContinuousLatencyMonitor:
         
         print(f"Starting continuous latency monitoring")
         print(f"Instance ID: {self.instance_id}")
+        print(f"TCP connection timeout: {self.tcp_timeout_ms}ms")
         print(f"Wait between tests: {WAIT_BETWEEN_TESTS}s")
         print(f"CloudWatch: Batch sending after test completion")
         

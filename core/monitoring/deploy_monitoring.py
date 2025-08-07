@@ -357,7 +357,8 @@ class MonitoringDeployer:
             # Copy config file
             config_content = json.dumps({
                 'region': self.config.region,
-                'monitoring_domains': self.config.monitoring_domains
+                'monitoring_domains': self.config.monitoring_domains,
+                'tcp_connection_timeout_ms': self.config.tcp_connection_timeout_ms  # Include TCP timeout
             }, indent=2)
             
             cmd = f"echo '{config_content}' > {self.monitor_dir}/config.json"
