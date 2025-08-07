@@ -19,7 +19,7 @@ import os
 import json
 import subprocess
 import boto3
-from core.testing import SSHClient
+from core.testing import SSHClient, LocalCommandRunner
 from core.testing.file_deployment import create_ip_list_deployer
 
 def get_instance_public_ip(instance_id, region):
@@ -136,7 +136,8 @@ def main():
             json.dump(ip_list, f)
         
         domains_args = " ".join(config['latency_test_domains'])
-        test_command = f"python3 {test_script} --domains {domains_args} --ip-list /tmp/ip_list_local.json"
+        tcp_timeout_ms = config.get('tcp_connection_timeout_ms', 1000)  # Default to 1000ms if not in config
+        test_command = f"python3 {test_script} --domains {domains_args} --ip-list /tmp/ip_list_local.json --tcp-timeout-ms {tcp_timeout_ms}"
         print(f"[INFO] Running locally: {test_command}")
     else:
         # For remote execution, deploy the IP list using shared utilities
@@ -147,7 +148,8 @@ def main():
         
         if file_deployer.deploy_ip_list(public_ip, ip_list, "/tmp/ip_list.json"):
             domains_args = " ".join(config['latency_test_domains'])
-            test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json"
+            tcp_timeout_ms = config.get('tcp_connection_timeout_ms', 1000)  # Default to 1000ms if not in config
+            test_command = f"python3 binance_latency_test.py --domains {domains_args} --ip-list /tmp/ip_list.json --tcp-timeout-ms {tcp_timeout_ms}"
             print("[INFO] IP list deployed successfully via SCP")
         else:
             print("[ERROR] Failed to deploy IP list via SCP")
@@ -159,31 +161,34 @@ def main():
     print("="*60)
     
     if run_locally:
-        # Run locally without SSH - use subprocess for local execution
+        # Run locally without SSH - use LocalCommandRunner for real-time progress
+        tcp_timeout_ms = config.get('tcp_connection_timeout_ms', 1000)  # Default to 1000ms if not in config
         cmd_args = [
             "python3", test_script,
             "--domains"
         ] + config['latency_test_domains'] + [
-            "--ip-list", "/tmp/ip_list_local.json"
+            "--ip-list", "/tmp/ip_list_local.json",
+            "--tcp-timeout-ms", str(tcp_timeout_ms)
         ]
         print(f"[INFO] Running locally: {' '.join(cmd_args)}")
+        print("Progress will be displayed below:")
+        print("-" * 40)
         
-        try:
-            result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=1800)
-            full_stdout = result.stdout
-            
-            if result.stderr:
-                print("Progress/debug output:")
-                print(result.stderr)
-                
-            if result.returncode != 0:
-                print(f"[ERROR] Local execution failed with return code {result.returncode}")
-                if full_stdout:
-                    print(f"Partial output: {full_stdout}")
-                sys.exit(1)
-                
-        except subprocess.TimeoutExpired:
-            print("[ERROR] Local test execution timed out")
+        # Use LocalCommandRunner for consistent progress display
+        local_runner = LocalCommandRunner()
+        full_stdout, stderr_output, return_code = local_runner.run_command_with_progress(
+            cmd_args, 
+            timeout=1800  # 30 minute timeout
+        )
+        
+        print("-" * 40)
+        
+        if return_code != 0:
+            print(f"\n[ERROR] Local execution failed with return code {return_code}")
+            if stderr_output:
+                print(f"Error output: {stderr_output}")
+            if full_stdout:
+                print(f"Partial results: {full_stdout}")
             sys.exit(1)
             
     else:
